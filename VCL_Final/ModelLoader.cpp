@@ -1,7 +1,48 @@
+#define STB_IMAGE_IMPLEMENTATION
 #include "ModelLoader.h"
+bool ModelLoader::LoadMTL(const std::string& path, std::unordered_map<std::string, Material>& outMaterials) {
+    std::ifstream fin(path);
+    if (!fin.is_open()) {
+        std::cerr << "Failed to open MTL file: " << path << std::endl;
+        return false;
+    }
+    std::string baseDir = std::filesystem::path(path).parent_path().string();
+    std::string line;
+    Material currentMat;
+    std::string currentName;
+
+    while (std::getline(fin, line)) {
+        if (line.empty()) continue;
+        std::istringstream iss(line);
+        std::string cmd;
+        iss >> cmd;
+
+        if (cmd == "newmtl") {
+            if (!currentName.empty())
+                outMaterials[currentName] = currentMat;
+            iss >> currentName;
+            currentMat = Material(); // 重置材质
+        }
+        else if (cmd == "Ka") iss >> currentMat.ambient.r >> currentMat.ambient.g >> currentMat.ambient.b;
+        else if (cmd == "Kd") iss >> currentMat.diffuse.r >> currentMat.diffuse.g >> currentMat.diffuse.b;
+        else if (cmd == "Ks") iss >> currentMat.specular.r >> currentMat.specular.g >> currentMat.specular.b;
+        else if (cmd == "Ns") iss >> currentMat.shiness;
+        else if (cmd == "map_Kd") {
+            iss >> currentMat.diffuseTexPath;               // 先读取文件名
+            std::string texPath = baseDir + "/" + currentMat.diffuseTexPath;
+            currentMat.diffuseTex = LoadTexture(texPath);  // 再加载
+        }
+    }
+
+    if (!currentName.empty())
+        outMaterials[currentName] = currentMat;
+
+    return true;
+}
 bool ModelLoader::LoadModel(const std::string& path,
     const glm::mat4& transform,
-    uint32_t materialID) {
+    uint32_t defaultMaterialID)
+{
     Assimp::Importer importer;
     const aiScene* scene = importer.ReadFile(
         path,
@@ -17,25 +58,42 @@ bool ModelLoader::LoadModel(const std::string& path,
         return false;
     }
 
-    // --- 默认材质处理 ---
-    if (materialID == UINT32_MAX || materialID >= materials.size()) {
-        // 创建一个默认全白材质
-        Material defaultMat(glm::vec3(1.0f), 0.0f, 0.0f, 0.5f);
-        materials.push_back(defaultMat);
-        materialID = static_cast<uint32_t>(materials.size() - 1);
+    std::string objDir = std::filesystem::path(path).parent_path().string();
+
+    // --- 解析 MTL 材质 ---
+    std::unordered_map<std::string, Material> mtlMaterials;
+    if (scene->mMaterials && scene->mNumMaterials > 0) {
+        for (unsigned int i = 0; i < scene->mNumMaterials; i++) {
+            aiMaterial* aiMat = scene->mMaterials[i];
+            aiString texPath;
+            if (aiMat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS) {
+                // 有贴图的情况
+                Material mat;
+                mat.diffuseTexPath = objDir + "/" + texPath.C_Str();
+                mtlMaterials[aiMat->GetName().C_Str()] = mat;
+            }
+        }
     }
 
-    glm::mat4 rootTransform =
-        transform * aiMatrix4x4ToGlm(scene->mRootNode->mTransformation);
+    // 默认材质
+    if (defaultMaterialID == UINT32_MAX || defaultMaterialID >= materials.size()) {
+        Material defaultMat(glm::vec3(1.0f));
+        materials.push_back(defaultMat);
+        defaultMaterialID = static_cast<uint32_t>(materials.size() - 1);
+    }
 
-    ProcessNode(scene->mRootNode, scene, rootTransform, materialID);
+    glm::mat4 rootTransform = transform * aiMatrix4x4ToGlm(scene->mRootNode->mTransformation);
+    ProcessNode(scene->mRootNode, scene, rootTransform, defaultMaterialID, mtlMaterials);
+
     return true;
 }
+
 bool ModelLoader::LoadSceneFromYAML(const std::string& yamlPath) {
     triangles.clear();
     materials.clear();
     materialNameToID.clear();
     nextMaterialID = 0;
+    lights.clear(); // 新增灯光容器
 
     YAML::Node config;
     try {
@@ -75,33 +133,65 @@ bool ModelLoader::LoadSceneFromYAML(const std::string& yamlPath) {
             initialFovy = cam["Fovy"].as<float>();
     }
 
+    /* ---------- Lights ---------- */
+    if (config["Lights"]) {
+        for (auto const& l : config["Lights"]) {
+            Light light;
+            std::string type = l["Type"].as<std::string>();
+            if (type == "Point") {
+                light.type = Light::Point;
+                auto pos = l["Position"];
+                light.position = glm::vec3(pos[0].as<float>(), pos[1].as<float>(), pos[2].as<float>());
+            }
+            else if (type == "Directional") {
+                light.type = Light::Directional;
+                auto dir = l["Direction"];
+                light.direction = glm::vec3(dir[0].as<float>(), dir[1].as<float>(), dir[2].as<float>());
+            }
+
+            if (l["Intensity"]) {
+                auto inten = l["Intensity"];
+                light.intensity = glm::vec3(inten[0].as<float>(), inten[1].as<float>(), inten[2].as<float>());
+            }
+            else {
+                light.intensity = glm::vec3(1.0f);
+            }
+
+            lights.push_back(light);
+        }
+    }
+
     /* ---------- Materials ---------- */
     if (config["Materials"]) {
         for (auto const& mat : config["Materials"]) {
             std::string name = mat["Name"].as<std::string>();
 
             Material m; // 默认全白
-            m.baseColor = glm::vec3(1.0f);
+            m.diffuse = glm::vec3(1.0f);
             m.emission = 0.0f;
             m.metallic = 0.0f;
-            m.roughness = 0.5f;
+            m.shiness = 0.5f;
 
             if (mat["Diffuse"]) {
-                m.baseColor = glm::vec3(
+                m.diffuse = glm::vec3(
                     mat["Diffuse"][0].as<float>(),
                     mat["Diffuse"][1].as<float>(),
                     mat["Diffuse"][2].as<float>()
                 );
             }
-
+            if (mat["Specular"]) {
+                m.specular = glm::vec3(
+                    mat["Specular"][0].as<float>(),
+                    mat["Specular"][1].as<float>(),
+                    mat["Specular"][2].as<float>()
+                );
+            }
             if (mat["Emission"])
                 m.emission = mat["Emission"].as<float>();
-
             if (mat["Metallic"])
                 m.metallic = mat["Metallic"].as<float>();
-
-            if (mat["Roughness"])
-                m.roughness = mat["Roughness"].as<float>();
+            if (mat["Shiness"])
+                m.shiness = mat["Shiness"].as<float>();
 
             uint32_t id = nextMaterialID++;
             materialNameToID[name] = id;
@@ -138,6 +228,7 @@ bool ModelLoader::LoadSceneFromYAML(const std::string& yamlPath) {
 
     return true;
 }
+
 void ModelLoader::SetupRasterMesh(const std::vector<Triangle>& tris, const Material& mat, Mesh& mesh) {
     std::vector<float> vertices;
     std::vector<unsigned int> indices;
@@ -149,9 +240,9 @@ void ModelLoader::SetupRasterMesh(const std::vector<Triangle>& tris, const Mater
             vertices.push_back(v.x);
             vertices.push_back(v.y);
             vertices.push_back(v.z);
-            vertices.push_back(mat.baseColor.r);
-            vertices.push_back(mat.baseColor.g);
-            vertices.push_back(mat.baseColor.b);
+            vertices.push_back(mat.diffuse.r);
+            vertices.push_back(mat.diffuse.g);
+            vertices.push_back(mat.diffuse.b);
             };
         addVertex(tri.v0);
         addVertex(tri.v1);
@@ -186,6 +277,7 @@ void ModelLoader::SetupRasterMesh(const std::vector<Triangle>& tris, const Mater
 }
 void ModelLoader::CreateRasterMeshes(std::vector<Mesh>& meshes) {
     meshes.clear();
+
     // 按材质分组
     std::unordered_map<uint32_t, std::vector<Triangle>> matGroups;
     for (auto& tri : triangles) {
@@ -193,20 +285,28 @@ void ModelLoader::CreateRasterMeshes(std::vector<Mesh>& meshes) {
     }
 
     for (auto& [matID, tris] : matGroups) {
-        Mesh mesh;
-        SetupRasterMesh(tris, materials[matID], mesh);
+        // 使用 ConvertToMesh，把 Triangle 转成 Mesh，并上传 VAO/VBO/EBO
+        Mesh mesh = ConvertToMesh(tris, materials[matID]);
+
+        // log 用于调试
+        std::cout << "Created mesh for material " << matID
+            << " with " << mesh.vertices.size() << " vertices, "
+            << mesh.indices.size() << " indices" << std::endl;
+
         meshes.push_back(mesh);
     }
 }
+
 Mesh ModelLoader::ConvertToMesh(const std::vector<Triangle>& tris, const Material& mat) {
     Mesh mesh;
     mesh.material = mat;
 
     for (const auto& t : tris) {
         // Triangle 的 v0/v1/v2 是 vec4，没有法线/uv，所以给默认值
-        MeshVertex v0{ glm::vec3(t.v0), glm::vec3(0,1,0), glm::vec2(0,0) };
-        MeshVertex v1{ glm::vec3(t.v1), glm::vec3(0,1,0), glm::vec2(0,0) };
-        MeshVertex v2{ glm::vec3(t.v2), glm::vec3(0,1,0), glm::vec2(0,0) };
+        MeshVertex v0{ glm::vec3(t.v0), t.n0, t.uv0 };
+        MeshVertex v1{ glm::vec3(t.v1), t.n1, t.uv1 };
+        MeshVertex v2{ glm::vec3(t.v2), t.n2, t.uv2 };
+
 
         uint32_t startIndex = static_cast<uint32_t>(mesh.vertices.size());
         mesh.vertices.push_back(v0);
@@ -226,18 +326,78 @@ Mesh ModelLoader::ConvertToMesh(const std::vector<Triangle>& tris, const Materia
 void ModelLoader::ProcessNode(aiNode* node,
     const aiScene* scene,
     const glm::mat4& transform,
-    uint32_t materialID) {
-
+    uint32_t defaultMaterialID,
+    const std::unordered_map<std::string, Material>& mtlMaterials)
+{
     for (unsigned int i = 0; i < node->mNumMeshes; i++) {
         aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
+        uint32_t materialID = defaultMaterialID;
+
+        if (mesh->mMaterialIndex < scene->mNumMaterials) {
+            aiMaterial* aiMat = scene->mMaterials[mesh->mMaterialIndex];
+            std::string matName = aiMat->GetName().C_Str();
+
+            if (mtlMaterials.count(matName)) {
+                Material mat = mtlMaterials.at(matName);
+
+                // 核心修复：确保 diffuseTex 赋值给 mat.diffuseTex
+                if (!mat.diffuseTexPath.empty()) {
+                    GLuint texID = LoadTexture(mat.diffuseTexPath);
+                    mat.diffuseTex = texID; // ← 这里必须赋值给 diffuseTex
+                }
+
+                materialID = nextMaterialID++;
+                materialNameToID[matName] = materialID;
+                materials.push_back(mat);
+            }
+        }
+
         ExtractTriangles(mesh, transform, materialID);
     }
 
-    for (unsigned int i = 0; i < node->mNumChildren; i++) {
-        glm::mat4 childTransform =
-            transform * aiMatrix4x4ToGlm(node->mChildren[i]->mTransformation);
-        ProcessNode(node->mChildren[i], scene, childTransform, materialID);
+    for (unsigned int i = 0; i < node->mNumChildren; i++)
+        ProcessNode(node->mChildren[i], scene, transform, defaultMaterialID, mtlMaterials);
+}
+GLuint ModelLoader::LoadTexture(const std::string& path) {
+    // 如果之前已经加载过，直接返回
+    if (loadedTextures.count(path)) {
+        return loadedTextures[path];
     }
+
+    int width, height, nrChannels;
+    stbi_set_flip_vertically_on_load(true); // 根据需要翻转图片
+    unsigned char* data = stbi_load(path.c_str(), &width, &height, &nrChannels, 0);
+    if (!data) {
+        std::cerr << "Failed to load texture: " << path << std::endl;
+        return 0;
+    }
+
+    GLenum format;
+    if (nrChannels == 1) format = GL_RED;
+    else if (nrChannels == 3) format = GL_RGB;
+    else if (nrChannels == 4) format = GL_RGBA;
+    else {
+        stbi_image_free(data);
+        std::cerr << "Unsupported number of channels (" << nrChannels << ") in texture: " << path << std::endl;
+        return 0;
+    }
+
+    GLuint textureID;
+    glGenTextures(1, &textureID);
+    glBindTexture(GL_TEXTURE_2D, textureID);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    // 设置默认采样参数
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    stbi_image_free(data);
+    loadedTextures[path] = textureID;
+    return textureID;
 }
 void ModelLoader::ExtractTriangles(aiMesh* mesh,
     const glm::mat4& transform,
@@ -250,14 +410,33 @@ void ModelLoader::ExtractTriangles(aiMesh* mesh,
 
         Triangle tri;
 
-        auto apply = [&](unsigned int idx) {
-            aiVector3D v = mesh->mVertices[face.mIndices[idx]];
-            return transform * glm::vec4(v.x, v.y, v.z, 1.0f);
+        auto getVertex = [&](unsigned int idx) {
+            glm::vec4 pos = transform * glm::vec4(
+                mesh->mVertices[face.mIndices[idx]].x,
+                mesh->mVertices[face.mIndices[idx]].y,
+                mesh->mVertices[face.mIndices[idx]].z,
+                1.0f
+            );
+
+            glm::vec3 normal(0, 1, 0);
+            if (mesh->HasNormals()) {
+                aiVector3D n = mesh->mNormals[face.mIndices[idx]];
+                normal = glm::normalize(glm::vec3(n.x, n.y, n.z));
+            }
+
+            glm::vec2 uv(0.0f);
+            if (mesh->HasTextureCoords(0)) {
+                aiVector3D t = mesh->mTextureCoords[0][face.mIndices[idx]];
+                uv = glm::vec2(t.x, t.y);
+            }
+
+            return std::make_tuple(pos, normal, uv);
             };
 
-        tri.v0 = apply(0);
-        tri.v1 = apply(1);
-        tri.v2 = apply(2);
+        std::tie(tri.v0, tri.n0, tri.uv0) = getVertex(0);
+        std::tie(tri.v1, tri.n1, tri.uv1) = getVertex(1);
+        std::tie(tri.v2, tri.n2, tri.uv2) = getVertex(2);
+
         tri.material_id = materialID;
 
         triangles.push_back(tri);

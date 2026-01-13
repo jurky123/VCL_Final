@@ -1,38 +1,35 @@
-#version 430 core
+ï»¿#version 430 core
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(rgba32f, binding = 0) uniform image2D u_output_tex;
 
 const float PI = 3.14159265359;
 
-/* ===================== Êý¾Ý½á¹¹ ===================== */
-struct Material {
-    vec3 baseColor; // Âþ·´ÉäÑÕÉ«
-    float emission; // ·¢¹âÇ¿¶È
+/* ===================== æ•°æ®ç»“æž„ ===================== */
+struct GPU_Material {
+    vec3 diffuse;      // æ¼«åå°„é¢œè‰²
+    float emission;    // å‘å…‰å¼ºåº¦
 
-    float metallic;
-    float roughness;
+    vec3 specular;     // é«˜å…‰é¢œè‰²
+    float metallic;    // é‡‘å±žåº¦
 
-    int _pad0;
-    int _pad1;
-    int _pad2;
+    float shiness;     // ç²—ç³™åº¦
+    int diffuseTexID;  // è´´å›¾ID
+    int pad0;          // padding
+    int pad1;          // padding
 };
 
-// Material SSBO
 layout(std430, binding = 2) buffer MaterialBuffer {
-    Material materials[];
+    GPU_Material materials[];
 };
 
 struct Triangle {
-    vec4 v0;
-    vec4 v1;
-    vec4 v2;
+    vec4 v0, v1, v2;      // é¡¶ç‚¹ä½ç½®
+    vec3 n0, n1, n2;      // é¡¶ç‚¹æ³•çº¿
+    vec2 uv0, uv1, uv2;   // é¡¶ç‚¹ UV
     uint material_id;
-    uint _pad0;
-    uint _pad1;
-    uint _pad2;
+    uint pad0, pad1, pad2; // padding
 };
 
-// Triangle SSBO
 layout(std430, binding = 1) buffer TriangleBuffer {
     Triangle triangles[];
 };
@@ -45,17 +42,8 @@ uniform int  u_triangle_count;
 uniform int  u_samples_per_pixel;
 
 /* ===================== Ray ===================== */
-struct Ray {
-    vec3 origin;
-    vec3 dir;
-};
-
-struct HitPayload {
-    float t;
-    vec3 normal;
-    int  material_id;
-    int  hit_id;
-};
+struct Ray { vec3 origin; vec3 dir; };
+struct HitPayload { float t; vec3 normal; int material_id; int hit_id; };
 
 /* ===================== RNG ===================== */
 uint seed;
@@ -64,9 +52,7 @@ uint nextRandom() {
     uint word = ((seed >> ((seed >> 28u) + 4u)) ^ seed) * 277803737u;
     return (word >> 22u) ^ word;
 }
-float randomFloat() {
-    return float(nextRandom()) / 4294967296.0;
-}
+float randomFloat() { return float(nextRandom()) / 4294967296.0; }
 
 /* ===================== Sampling ===================== */
 void buildOrthonormalBasis(vec3 n, out vec3 t, out vec3 b) {
@@ -74,7 +60,6 @@ void buildOrthonormalBasis(vec3 n, out vec3 t, out vec3 b) {
                          : normalize(cross(n, vec3(1,0,0)));
     b = cross(n, t);
 }
-
 vec3 cosineSampleHemisphere(vec3 n) {
     float r1 = randomFloat();
     float r2 = randomFloat();
@@ -93,8 +78,8 @@ vec3 cosineSampleHemisphere(vec3 n) {
 /* ===================== Intersection ===================== */
 HitPayload RayTriangleIntersect(Ray ray, uint idx) {
     HitPayload p; p.hit_id = -1;
-
     Triangle tri = triangles[idx];
+
     vec3 v0v1 = tri.v1.xyz - tri.v0.xyz;
     vec3 v0v2 = tri.v2.xyz - tri.v0.xyz;
 
@@ -126,8 +111,7 @@ HitPayload SceneIntersect(Ray ray) {
     HitPayload best; best.t = 1e20; best.hit_id = -1;
     for (uint i = 0; i < uint(u_triangle_count); ++i) {
         HitPayload p = RayTriangleIntersect(ray, i);
-        if (p.hit_id != -1 && p.t < best.t)
-            best = p;
+        if (p.hit_id != -1 && p.t < best.t) best = p;
     }
     return best;
 }
@@ -156,25 +140,29 @@ void main() {
         for (int bounce = 0; bounce < 5; ++bounce) {
             HitPayload hit = SceneIntersect(ray);
             if (hit.hit_id == -1) {
-                radiance += vec3(0.5, 0.7, 0.9);
-                break;
+                vec3 pos = triangles[hit.hit_id].v0.xyz;
+                imageStore(u_output_tex, pixel, vec4(pos*0.1+0.5,1.0));
+                return;
             }
 
             int mid = clamp(hit.material_id, 0, int(materials.length()) - 1);
-            Material mat = materials[mid];
+            // âœ… ä¸è¦ç”¨ `=` åˆå§‹åŒ–ï¼Œåªç”¨å¼•ç”¨è®¿é—®
+            vec3 baseColor = materials[mid].diffuse;
+            vec3 specular = materials[mid].specular;
+            float emission = materials[mid].emission;
+            float shiness = materials[mid].shiness;
+            float metallic = materials[mid].metallic;
 
-            // ·¢¹â
-            if (mat.emission > 0.0) {
-                radiance += throughput * mat.baseColor * mat.emission;
+            if (emission > 0.0) {
+                radiance += throughput * baseColor * emission;
                 break;
             }
 
-            // ×îÐ¡»·¾³¹â£¬±£Ö¤¿É¼û
-            radiance += throughput * mat.baseColor * 0.05;
+            radiance += throughput * baseColor * 0.05;
 
             vec3 wi = cosineSampleHemisphere(hit.normal);
             float cosTheta = max(dot(hit.normal, wi), 0.0);
-            vec3 f = mat.baseColor / PI;
+            vec3 f = baseColor / PI;
 
             throughput *= f * cosTheta;
             ray.origin += ray.dir * hit.t + hit.normal * 0.001;

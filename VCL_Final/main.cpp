@@ -103,7 +103,7 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
     if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) {
         camera.Zoom -= (float)yoffset * 2.0f;
         if (camera.Zoom < 1.0f) camera.Zoom = 1.0f;
-        if (camera.Zoom > 720.0f) camera.Zoom = 720.0f;
+        if (camera.Zoom > 3000.0f) camera.Zoom = 3000.0f;
     }
     else {
         if (yoffset > 0) camera.MovementSpeed *= 1.2f;
@@ -125,18 +125,13 @@ void processInput(GLFWwindow* window) {
 }
 
 int main() {
-
     // 1. GLFW & GLAD 初始化
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
-    GLFWwindow* window = glfwCreateWindow(
-        SCR_WIDTH, SCR_HEIGHT,
-        "Path Tracer Lab - Offline Mode",
-        NULL, NULL
-    );
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Path Tracer Lab - Offline Mode", NULL, NULL);
     glfwMakeContextCurrent(window);
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glfwSetCursorPosCallback(window, mouse_callback);
@@ -153,54 +148,34 @@ int main() {
     Shader pathTracerShader("shaders/path_tracer.comp");
     Shader screenShader("shaders/quad.vs", "shaders/quad.fs");
     Shader rasterShader("shaders/raster.vs", "shaders/raster.fs");
-    // --- Triangle SSBO ---
+
     glGenBuffers(1, &ssboTriangles);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboTriangles);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboTriangles);
 
-    // --- Material SSBO（新增，仅此一处）---
     glGenBuffers(1, &ssboMaterials);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboMaterials);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboMaterials);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-    // 加载场景（会填充 loader.triangles 和 materials）
-
-
-    // 加载场景
+    // 4. 加载场景
     LoadScene(scenePaths[currentSceneIndex]);
-
-    // 创建光栅化 Mesh
     loader.CreateRasterMeshes(sceneMeshes);
-    // debug
-    std::cout << "[DEBUG] Created " << sceneMeshes.size() << " raster meshes" << std::endl;
-    for (auto& mesh : sceneMeshes) {
-        std::cout << "Mesh indices: " << mesh.indexCount
-            << " baseColor: (" << mesh.material.baseColor.r << ","
-            << mesh.material.baseColor.g << ","
-            << mesh.material.baseColor.b << ")" << std::endl;
-    }
 
-    // === 上传 Triangle ===
+    // 5. 上传 Triangle 数据
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboTriangles);
-    glBufferData(
-        GL_SHADER_STORAGE_BUFFER,
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
         loader.triangles.size() * sizeof(Triangle),
         loader.triangles.data(),
-        GL_STATIC_DRAW
-    );
+        GL_STATIC_DRAW);
 
-    // === 上传 Material（新增）===
+    // 6. 上传 Material 数据
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboMaterials);
-    glBufferData(
-        GL_SHADER_STORAGE_BUFFER,
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
         loader.materials.size() * sizeof(Material),
         loader.materials.data(),
-        GL_STATIC_DRAW
-    );
+        GL_STATIC_DRAW);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-    // 4. 全屏 Quad
+    
+    // 7. 全屏 Quad
     float quadVertices[] = {
         -1,  1, 0, 0, 1,
         -1, -1, 0, 0, 0,
@@ -209,7 +184,6 @@ int main() {
          1, -1, 0, 1, 0,
          1,  1, 0, 1, 1
     };
-
     unsigned int quadVAO, quadVBO;
     glGenVertexArrays(1, &quadVAO);
     glGenBuffers(1, &quadVBO);
@@ -221,7 +195,7 @@ int main() {
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
 
-    // 5. 输出纹理
+    // 8. 输出纹理
     unsigned int texOutput;
     glGenTextures(1, &texOutput);
     glBindTexture(GL_TEXTURE_2D, texOutput);
@@ -232,69 +206,77 @@ int main() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glBindImageTexture(0, texOutput, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
 
-
     static bool renderDone = false;
 
-    // 6. 渲染循环
+    // 9. 渲染循环
     while (!glfwWindowShouldClose(window)) {
-
-        float currentFrame = static_cast<float>(glfwGetTime());
+        float currentFrame = (float)glfwGetTime();
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
         processInput(window);
 
-        // --- ImGui ---
+        // --- ImGui 新帧 ---
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        {
-            ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
-            ImGui::SetNextWindowSize(ImVec2((float)SIDEBAR_WIDTH, (float)SCR_HEIGHT));
-            ImGui::Begin("Scene Control", nullptr,
-                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
+        // --- ImGui 界面 ---
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+        ImGui::SetNextWindowSize(ImVec2((float)SIDEBAR_WIDTH, (float)SCR_HEIGHT));
+        ImGui::Begin("Scene Control", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize);
 
-            ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
-            ImGui::Text("Triangles: %d", (int)loader.triangles.size());
-            ImGui::Separator();
+        ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+        ImGui::Text("Triangles: %d", (int)loader.triangles.size());
+        ImGui::Separator();
 
-            if (ImGui::Checkbox("Enable Path Tracing", &isRendering))
-                renderDone = false;
+        if (ImGui::Checkbox("Enable Path Tracing", &isRendering))
+            renderDone = false;
 
-            if (isRendering) {
-                ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "Mode: PATH TRACING");
-                if (renderDone) {
-                    ImGui::Text("Status: Render Finished");
-                    if (ImGui::Button("Re-Render")) renderDone = false;
-                }
-                else {
-                    ImGui::Text("Status: Rendering...");
-                }
+        if (isRendering) {
+            ImGui::TextColored(ImVec4(1, 0.5, 0, 1), "Mode: PATH TRACING");
+            if (renderDone) {
+                ImGui::Text("Status: Render Finished");
+                if (ImGui::Button("Re-Render")) renderDone = false;
             }
             else {
-                ImGui::TextColored(ImVec4(0, 1, 0, 1), "Mode: PREVIEW");
+                ImGui::Text("Status: Rendering...");
             }
-
-            ImGui::Separator();
-            const char* items[] = { "Slime", "Cube", "Cornell Box","Breakfast_room"};
-            if (ImGui::Combo("Select Scene", &currentSceneIndex, items, 4)) {
-                LoadScene(scenePaths[currentSceneIndex]);
-                renderDone = false;
-            }
-
-            ImGui::SliderFloat("FOV", &camera.Zoom, 1.0f, 720.0f);
-            ImGui::Text("Camera Speed: %.3f", camera.MovementSpeed);
-
-            if (ImGui::Button("Reset View")) {
-                LoadScene(scenePaths[currentSceneIndex]);
-                renderDone = false;
-            }
-
-            ImGui::End();
+        }
+        else {
+            ImGui::TextColored(ImVec4(0, 1, 0, 1), "Mode: PREVIEW");
         }
 
-        // 7. Compute Shader
+        ImGui::Separator();
+        const char* items[] = { "Slime", "Cube", "Cornell Box","Breakfast_room" };
+        if (ImGui::Combo("Select Scene", &currentSceneIndex, items, 4)) {
+            LoadScene(scenePaths[currentSceneIndex]);
+            loader.CreateRasterMeshes(sceneMeshes);
+            
+            renderDone = false;
+        }
+
+        ImGui::SliderFloat("FOV", &camera.Zoom, 1.0f, 3000.0f);
+        ImGui::Text("Camera Speed: %.3f", camera.MovementSpeed);
+
+        if (ImGui::Button("Reset View")) {
+            LoadScene(scenePaths[currentSceneIndex]);
+            loader.CreateRasterMeshes(sceneMeshes);
+            for (size_t i = 0; i < loader.materials.size(); i++) {
+                auto& m = loader.materials[i];
+                std::cout << "Material " << i
+                    << " diffuse: " << m.diffuse.r << "," << m.diffuse.g << "," << m.diffuse.b
+                    << " spec: " << m.specular.r << "," << m.specular.g << "," << m.specular.b
+                    << " shiness: " << m.shiness
+                    << " tex: " << m.diffuseTexPath
+                    << std::endl;
+            }
+            renderDone = false;
+        }
+
+        ImGui::End();
+
+        // --- 路径追踪 ---
         pathTracerShader.use();
         pathTracerShader.setInt("u_triangle_count", (int)loader.triangles.size());
         pathTracerShader.setInt("u_material_count", (int)loader.materials.size());
@@ -303,45 +285,114 @@ int main() {
         pathTracerShader.setMat4("u_inv_view", camera.GetInverseViewMatrix());
         pathTracerShader.setMat4("u_inv_proj", camera.GetInverseProjectionMatrix(aspect));
 
-        if (isRendering) {
-            if (!renderDone) {
-                // 路径追踪模式
-                pathTracerShader.setInt("u_is_rendering", 1);
-                pathTracerShader.setInt("u_samples_per_pixel", 512); // 你可以改成可调参数
-                pathTracerShader.setInt("u_frame_index", 0);         // 每次重新渲染从 0 开始
-
-                glDispatchCompute((SCR_WIDTH + 15) / 16, (SCR_HEIGHT + 15) / 16, 1);
-                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-
-                renderDone = true;
-            }
-        }
-        else {
-            // 预览模式（快速单帧）
-            pathTracerShader.setInt("u_is_rendering", 0);
-            pathTracerShader.setInt("u_samples_per_pixel", 1);
+        if (isRendering && !renderDone) {
+            pathTracerShader.setInt("u_is_rendering", 1);
+            pathTracerShader.setInt("u_samples_per_pixel", 512);
             pathTracerShader.setInt("u_frame_index", 0);
 
             glDispatchCompute((SCR_WIDTH + 15) / 16, (SCR_HEIGHT + 15) / 16, 1);
             glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
-            renderDone = false; // 每帧都刷新，保持预览动态
+            renderDone = true;
         }
 
-        // 8. 显示
+        // 绘制到屏幕
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        glViewport(SIDEBAR_WIDTH, 0,
-            SCR_WIDTH - SIDEBAR_WIDTH, SCR_HEIGHT);
+        if (isRendering) {
+            glViewport(SIDEBAR_WIDTH, 0, SCR_WIDTH - SIDEBAR_WIDTH, SCR_HEIGHT);
 
-        screenShader.use();
-        glBindVertexArray(quadVAO);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, texOutput);
-        screenShader.setInt("u_texOutput", 0); // <--- 一定要设置 uniform
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+            // --- 使用路径追踪 compute shader ---
+            pathTracerShader.use();
 
+            // 1. 三角形 & 材质数量
+            pathTracerShader.setInt("u_triangle_count", (int)loader.triangles.size());
+            pathTracerShader.setInt("u_material_count", (int)loader.materials.size());
+
+            // 2. 帧编号 & 采样数量
+            pathTracerShader.setInt("u_frame_index", frameIndex);
+            pathTracerShader.setInt("u_samples_per_pixel", 512);
+
+            // 3. 摄像机矩阵
+            float aspect = float(SCR_WIDTH - SIDEBAR_WIDTH) / float(SCR_HEIGHT);
+            pathTracerShader.setMat4("u_inv_view", camera.GetInverseViewMatrix());
+            pathTracerShader.setMat4("u_inv_proj", camera.GetInverseProjectionMatrix(aspect));
+
+            // 4. 输出纹理绑定
+            glBindImageTexture(0, texOutput, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+
+            // 5. SSBO 绑定（Triangles + Materials）
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboTriangles);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboMaterials);
+
+            // 6. Dispatch compute
+            GLuint groupX = (SCR_WIDTH + 15) / 16;
+            GLuint groupY = (SCR_HEIGHT + 15) / 16;
+            glDispatchCompute(groupX, groupY, 1);
+
+            // 7. 保证 compute 写入完成
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+            // 8. 渲染到屏幕
+            screenShader.use();
+            glBindVertexArray(quadVAO);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, texOutput);
+            screenShader.setInt("u_texOutput", 0);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+
+            // 9. 增加帧计数
+            frameIndex++;
+        }
+
+        else {
+            // --- 光栅化渲染 ---
+            glEnable(GL_DEPTH_TEST);
+
+            rasterShader.use();
+            rasterShader.setMat4("view", camera.GetViewMatrix());
+            rasterShader.setMat4("proj", glm::perspective(glm::radians(camera.Zoom),
+                float(SCR_WIDTH - SIDEBAR_WIDTH) / SCR_HEIGHT, 0.1f, 10000.0f));
+            rasterShader.setVec3("u_cam_pos", camera.Position);
+
+            // 灯光传递
+            int light_count = std::min((int)loader.lights.size(), 16);
+            rasterShader.setInt("u_light_count", light_count);
+            for (int i = 0; i < light_count; i++) {
+                rasterShader.setVec3("u_light_positions[" + std::to_string(i) + "]", loader.lights[i].position);
+                rasterShader.setVec3("u_light_intensities[" + std::to_string(i) + "]", loader.lights[i].intensity);
+            }
+
+            // 绘制 Mesh
+            for (auto& mesh : sceneMeshes) {
+                // 传材质属性
+                rasterShader.setVec3("diffuse", mesh.material.diffuse);
+                rasterShader.setVec3("specular", mesh.material.specular);
+                rasterShader.setFloat("shiness", mesh.material.shiness);
+                rasterShader.setFloat("emission", mesh.material.emission);
+
+                // 传贴图信息
+                if (mesh.material.diffuseTex) {
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(GL_TEXTURE_2D, mesh.material.diffuseTex);
+                    rasterShader.setInt("u_diffuseTex", 0);
+                    rasterShader.setInt("hasDiffuseTex", 1); // 必须加上
+                }
+                else {
+                    rasterShader.setInt("hasDiffuseTex", 0);
+                }
+
+                glBindVertexArray(mesh.VAO);
+                glDrawElements(GL_TRIANGLES, mesh.indexCount, GL_UNSIGNED_INT, 0);
+            }
+
+
+            glBindVertexArray(0);
+            glDisable(GL_DEPTH_TEST);
+        }
+
+        // --- ImGui 渲染 ---
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
@@ -349,9 +400,12 @@ int main() {
         glfwPollEvents();
     }
 
+    // 10. Cleanup
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     glfwTerminate();
+
     return 0;
 }
+

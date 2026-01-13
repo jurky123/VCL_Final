@@ -87,6 +87,12 @@
     <ClCompile Include="mesh.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="include\stb_vorbis.c">
+      <Filter>include</Filter>
+    </ClCompile>
+    <ClCompile Include="GPU_Material.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="shader.h">
@@ -148,6 +154,69 @@
     </ClInclude>
     <ClInclude Include="triangle.h">
       <Filter>scene</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_image.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_c_lexer.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_connected_components.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_divide.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_ds.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_dxt.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_easy_font.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_herringbone_wang_tile.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_hexwave.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_image_resize2.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_image_write.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_include.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_leakcheck.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_perlin.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_rect_pack.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_sprintf.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_textedit.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_tilemap_editor.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_truetype.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stb_voxel_render.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="GPU_Material.h">
+      <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

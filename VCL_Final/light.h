@@ -2,6 +2,8 @@
 #include "material.h"
 
 struct Light {
-    int material_id;
-    // 未来可以加面积、采样权重等
+    enum Type { Point, Directional } type;
+    glm::vec3 position;   // 对点光
+    glm::vec3 direction;  // 对方向光
+    glm::vec3 intensity;
 };

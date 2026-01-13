@@ -1,8 +1,8 @@
 #include "mesh.h"
 void Mesh::setupGL() {
-    if (VAO == 0) glGenVertexArrays(1, &VAO);
-    if (VBO == 0) glGenBuffers(1, &VBO);
-    if (EBO == 0) glGenBuffers(1, &EBO);
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+    glGenBuffers(1, &EBO);
 
     glBindVertexArray(VAO);
 
@@ -11,17 +11,20 @@ void Mesh::setupGL() {
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(uint32_t), indices.data(), GL_STATIC_DRAW);
-    indexCount = indices.size();
 
-    // ¶¥µã²¼¾Ö
-    glEnableVertexAttribArray(0); // position
+    // vertex positions
+    glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void*)0);
 
-    glEnableVertexAttribArray(1); // normal
+    // normals
+    glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void*)offsetof(MeshVertex, normal));
 
-    glEnableVertexAttribArray(2); // uv
+    // uv
+    glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void*)offsetof(MeshVertex, uv));
 
     glBindVertexArray(0);
+
+    indexCount = indices.size();
 }

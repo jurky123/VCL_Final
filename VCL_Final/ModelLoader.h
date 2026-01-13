@@ -17,16 +17,18 @@
 #include "mesh.h"
 #include "Triangle.h"
 #include "Material.h"
+#include "light.h"
 
+#include "stb_image.h"
 class ModelLoader {
 public:
     std::vector<Triangle> triangles;
     std::vector<Material> materials;
-
+    std::vector<Light> lights;
     glm::vec3 initialEye = glm::vec3(0, 0, 5);
     glm::vec3 initialTarget = glm::vec3(0, 0, 0);
     float initialFovy = 45.0f;
-
+    std::unordered_map<std::string, GLuint> loadedTextures;
     std::unordered_map<std::string, uint32_t> materialNameToID;
     uint32_t nextMaterialID = 0;
 
@@ -41,7 +43,7 @@ public:
 
     bool LoadModel(const std::string& path,
         const glm::mat4& transform = glm::mat4(1.0f),
-        uint32_t materialID = UINT32_MAX); // 默认值表示未指定
+        uint32_t defaultMaterialID = UINT32_MAX); // 默认值表示未指定
         
 
     bool LoadSceneFromYAML(const std::string& yamlPath);
@@ -51,13 +53,16 @@ public:
     void CreateRasterMeshes(std::vector<Mesh>& meshes);
 
     Mesh ConvertToMesh(const std::vector<Triangle>& tris, const Material& mat);
+    bool LoadMTL(const std::string& path, std::unordered_map<std::string, Material>& outMaterials);
 
 
+    GLuint LoadTexture(const std::string& path);
 private:
     void ProcessNode(aiNode* node,
         const aiScene* scene,
         const glm::mat4& transform,
-        uint32_t materialID);
+        uint32_t defaultMaterialID,
+        const std::unordered_map<std::string, Material>& mtlMaterials);
 
     void ExtractTriangles(aiMesh* mesh,
         const glm::mat4& transform,
