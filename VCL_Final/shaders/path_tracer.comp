@@ -1,0 +1,190 @@
+#version 430 core
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(rgba32f, binding = 0) uniform image2D u_output_tex;
+
+const float PI = 3.14159265359;
+
+/* ===================== 数据结构 ===================== */
+struct Material {
+    vec3 baseColor; // 漫反射颜色
+    float emission; // 发光强度
+
+    float metallic;
+    float roughness;
+
+    int _pad0;
+    int _pad1;
+    int _pad2;
+};
+
+// Material SSBO
+layout(std430, binding = 2) buffer MaterialBuffer {
+    Material materials[];
+};
+
+struct Triangle {
+    vec4 v0;
+    vec4 v1;
+    vec4 v2;
+    uint material_id;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+};
+
+// Triangle SSBO
+layout(std430, binding = 1) buffer TriangleBuffer {
+    Triangle triangles[];
+};
+
+/* ===================== Uniform ===================== */
+uniform mat4 u_inv_view;
+uniform mat4 u_inv_proj;
+uniform int  u_frame_index;
+uniform int  u_triangle_count;
+uniform int  u_samples_per_pixel;
+
+/* ===================== Ray ===================== */
+struct Ray {
+    vec3 origin;
+    vec3 dir;
+};
+
+struct HitPayload {
+    float t;
+    vec3 normal;
+    int  material_id;
+    int  hit_id;
+};
+
+/* ===================== RNG ===================== */
+uint seed;
+uint nextRandom() {
+    seed = seed * 747796405u + 2891336453u;
+    uint word = ((seed >> ((seed >> 28u) + 4u)) ^ seed) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+float randomFloat() {
+    return float(nextRandom()) / 4294967296.0;
+}
+
+/* ===================== Sampling ===================== */
+void buildOrthonormalBasis(vec3 n, out vec3 t, out vec3 b) {
+    t = abs(n.z) < 0.999 ? normalize(cross(n, vec3(0,0,1)))
+                         : normalize(cross(n, vec3(1,0,0)));
+    b = cross(n, t);
+}
+
+vec3 cosineSampleHemisphere(vec3 n) {
+    float r1 = randomFloat();
+    float r2 = randomFloat();
+    float phi = 2.0 * PI * r1;
+    float r = sqrt(r2);
+
+    vec3 t, b;
+    buildOrthonormalBasis(n, t, b);
+    return normalize(
+        r * cos(phi) * t +
+        r * sin(phi) * b +
+        sqrt(1.0 - r2) * n
+    );
+}
+
+/* ===================== Intersection ===================== */
+HitPayload RayTriangleIntersect(Ray ray, uint idx) {
+    HitPayload p; p.hit_id = -1;
+
+    Triangle tri = triangles[idx];
+    vec3 v0v1 = tri.v1.xyz - tri.v0.xyz;
+    vec3 v0v2 = tri.v2.xyz - tri.v0.xyz;
+
+    vec3 pvec = cross(ray.dir, v0v2);
+    float det = dot(v0v1, pvec);
+    if (abs(det) < 1e-6) return p;
+
+    float invDet = 1.0 / det;
+    vec3 tvec = ray.origin - tri.v0.xyz;
+    float u = dot(tvec, pvec) * invDet;
+    if (u < 0.0 || u > 1.0) return p;
+
+    vec3 qvec = cross(tvec, v0v1);
+    float v = dot(ray.dir, qvec) * invDet;
+    if (v < 0.0 || u + v > 1.0) return p;
+
+    float t = dot(v0v2, qvec) * invDet;
+    if (t < 0.001) return p;
+
+    p.t = t;
+    p.normal = normalize(cross(v0v1, v0v2));
+    if (det < 0.0) p.normal *= -1.0;
+    p.material_id = int(tri.material_id);
+    p.hit_id = int(idx);
+    return p;
+}
+
+HitPayload SceneIntersect(Ray ray) {
+    HitPayload best; best.t = 1e20; best.hit_id = -1;
+    for (uint i = 0; i < uint(u_triangle_count); ++i) {
+        HitPayload p = RayTriangleIntersect(ray, i);
+        if (p.hit_id != -1 && p.t < best.t)
+            best = p;
+    }
+    return best;
+}
+
+/* ===================== Main ===================== */
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dims = imageSize(u_output_tex);
+    if (any(greaterThanEqual(pixel, dims))) return;
+
+    seed = uint(pixel.y * dims.x + pixel.x) + uint(u_frame_index) * 719393u;
+    vec3 accumulated = vec3(0.0);
+
+    for (int s = 0; s < u_samples_per_pixel; ++s) {
+        vec2 jitter = vec2(randomFloat(), randomFloat());
+        vec2 uv = (vec2(pixel) + jitter) / vec2(dims);
+        vec4 target = u_inv_proj * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
+
+        Ray ray;
+        ray.origin = (u_inv_view * vec4(0,0,0,1)).xyz;
+        ray.dir = normalize((u_inv_view * vec4(target.xyz / target.w, 0)).xyz);
+
+        vec3 throughput = vec3(1.0);
+        vec3 radiance = vec3(0.0);
+
+        for (int bounce = 0; bounce < 5; ++bounce) {
+            HitPayload hit = SceneIntersect(ray);
+            if (hit.hit_id == -1) {
+                radiance += vec3(0.5, 0.7, 0.9);
+                break;
+            }
+
+            int mid = clamp(hit.material_id, 0, int(materials.length()) - 1);
+            Material mat = materials[mid];
+
+            // 发光
+            if (mat.emission > 0.0) {
+                radiance += throughput * mat.baseColor * mat.emission;
+                break;
+            }
+
+            // 最小环境光，保证可见
+            radiance += throughput * mat.baseColor * 0.05;
+
+            vec3 wi = cosineSampleHemisphere(hit.normal);
+            float cosTheta = max(dot(hit.normal, wi), 0.0);
+            vec3 f = mat.baseColor / PI;
+
+            throughput *= f * cosTheta;
+            ray.origin += ray.dir * hit.t + hit.normal * 0.001;
+            ray.dir = wi;
+        }
+
+        accumulated += radiance;
+    }
+
+    vec3 color = accumulated / float(u_samples_per_pixel);
+    color = pow(color, vec3(1.0 / 2.2));
+    imageStore(u_output_tex, pixel, vec4(color, 1.0));
+}
