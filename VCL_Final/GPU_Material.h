@@ -2,26 +2,15 @@
 #include <glm/glm.hpp>
 #include "material.h"
 
-struct GPU_Material {
-    glm::vec3 baseColor;
+struct alignas(16) GPU_Material {
+    glm::vec4 diffuse;
+    glm::vec4 specular;
+
     float emission;
-    glm::vec3 specular;
     float metallic;
-    float roughness;
+    float shiness;
     int diffuseTexID;
-    int pad0;
-    int pad1;
 };
+static_assert(sizeof(GPU_Material) == 48);
 
 // ´Ó CPU Material ×ªÎª GPU_Material
-inline GPU_Material ConvertToGPU(const Material& mat) {
-    GPU_Material gpuMat;
-    gpuMat.baseColor = mat.diffuse;
-    gpuMat.emission = mat.emission;
-    gpuMat.specular = mat.specular;
-    gpuMat.metallic = mat.metallic;
-    gpuMat.roughness = mat.shiness;
-    gpuMat.diffuseTexID = mat.diffuseTexID;
-    gpuMat.pad0 = gpuMat.pad1 = 0;
-    return gpuMat;
-}

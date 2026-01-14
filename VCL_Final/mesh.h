@@ -11,6 +11,7 @@ struct Mesh {
     std::vector<MeshVertex> vertices;
     std::vector<uint32_t> indices;
     Material material;   // 光栅化用
+    int material_index = -1; // 新增，指向 loader.materials
     GLuint VAO = 0;
     GLuint VBO = 0;
     GLuint EBO = 0;
@@ -18,4 +19,5 @@ struct Mesh {
 
     void setupGL();
 };
+
 

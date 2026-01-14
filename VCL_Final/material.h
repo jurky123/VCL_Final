@@ -17,6 +17,7 @@ struct Material {
     std::string diffuseTexPath;
     unsigned int diffuseTexID = 0;
     GLuint diffuseTex = 0; // 新增
+    int id = -1; // 新增，用于唯一标识
     // 构造函数方便直接初始化
     Material() = default;
     Material(const glm::vec3& color, float emit = 0.0f, float met = 0.0f, float shiness = 0.5f,const glm::vec3& specular = glm::vec3(1.0f))

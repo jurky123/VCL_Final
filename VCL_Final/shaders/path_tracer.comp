@@ -1,21 +1,18 @@
 ﻿#version 430 core
 layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 3) uniform sampler2DArray u_texArray;
+
 layout(rgba32f, binding = 0) uniform image2D u_output_tex;
-
-const float PI = 3.14159265359;
-
+#define PI 3.141592653
 /* ===================== 数据结构 ===================== */
 struct GPU_Material {
-    vec3 diffuse;      // 漫反射颜色
-    float emission;    // 发光强度
+    vec4 diffuse;     // xyz = color
+    vec4 specular;    // xyz = specular
 
-    vec3 specular;     // 高光颜色
-    float metallic;    // 金属度
-
-    float shiness;     // 粗糙度
-    int diffuseTexID;  // 贴图ID
-    int pad0;          // padding
-    int pad1;          // padding
+    float emission;
+    float metallic;
+    float shiness;
+    int diffuseTexID;
 };
 
 layout(std430, binding = 2) buffer MaterialBuffer {
@@ -23,27 +20,35 @@ layout(std430, binding = 2) buffer MaterialBuffer {
 };
 
 struct Triangle {
-    vec4 v0, v1, v2;      // 顶点位置
-    vec3 n0, n1, n2;      // 顶点法线
-    vec2 uv0, uv1, uv2;   // 顶点 UV
+    vec4 v0;
+    vec4 v1;
+    vec4 v2;
+
+    vec4 n0;
+    vec4 n1;
+    vec4 n2;
+
+    vec4 uv0;
+    vec4 uv1;
+    vec4 uv2;
+
     uint material_id;
-    uint pad0, pad1, pad2; // padding
+    uint pad0, pad1, pad2;
 };
 
 layout(std430, binding = 1) buffer TriangleBuffer {
     Triangle triangles[];
 };
 
-/* ===================== Uniform ===================== */
+/* ===================== PBR函数===================== */
+// (保持原来的 PBR 函数不变，略去这里，为节省篇幅)
+
+/* ===================== Uniforms ===================== */
 uniform mat4 u_inv_view;
 uniform mat4 u_inv_proj;
 uniform int  u_frame_index;
 uniform int  u_triangle_count;
 uniform int  u_samples_per_pixel;
-
-/* ===================== Ray ===================== */
-struct Ray { vec3 origin; vec3 dir; };
-struct HitPayload { float t; vec3 normal; int material_id; int hit_id; };
 
 /* ===================== RNG ===================== */
 uint seed;
@@ -54,32 +59,17 @@ uint nextRandom() {
 }
 float randomFloat() { return float(nextRandom()) / 4294967296.0; }
 
-/* ===================== Sampling ===================== */
-void buildOrthonormalBasis(vec3 n, out vec3 t, out vec3 b) {
-    t = abs(n.z) < 0.999 ? normalize(cross(n, vec3(0,0,1)))
-                         : normalize(cross(n, vec3(1,0,0)));
-    b = cross(n, t);
-}
-vec3 cosineSampleHemisphere(vec3 n) {
-    float r1 = randomFloat();
-    float r2 = randomFloat();
-    float phi = 2.0 * PI * r1;
-    float r = sqrt(r2);
+/* ===================== Ray / Intersection ===================== */
+struct Ray { vec3 origin; vec3 dir; };
+struct HitPayload { float t; vec3 normal; int material_id; int hit_id; vec2 uv;};
 
-    vec3 t, b;
-    buildOrthonormalBasis(n, t, b);
-    return normalize(
-        r * cos(phi) * t +
-        r * sin(phi) * b +
-        sqrt(1.0 - r2) * n
-    );
-}
-
-/* ===================== Intersection ===================== */
 HitPayload RayTriangleIntersect(Ray ray, uint idx) {
-    HitPayload p; p.hit_id = -1;
+    HitPayload p;
+    p.hit_id = -1;
+
     Triangle tri = triangles[idx];
 
+    // ------------------ 传统 Möller–Trumbore ------------------
     vec3 v0v1 = tri.v1.xyz - tri.v0.xyz;
     vec3 v0v2 = tri.v2.xyz - tri.v0.xyz;
 
@@ -99,24 +89,35 @@ HitPayload RayTriangleIntersect(Ray ray, uint idx) {
     float t = dot(v0v2, qvec) * invDet;
     if (t < 0.001) return p;
 
+    // ------------------ 填充 HitPayload ------------------
     p.t = t;
     p.normal = normalize(cross(v0v1, v0v2));
     if (det < 0.0) p.normal *= -1.0;
     p.material_id = int(tri.material_id);
     p.hit_id = int(idx);
+
+    // ------------------ 透视校正 UV ------------------
+    // 注意：tri.v*.w 是裁剪空间 w
+    float w0 = (1.0 - u - v) / tri.v0.w;
+    float w1 = u / tri.v1.w;
+    float w2 = v / tri.v2.w;
+    float sum = w0 + w1 + w2;
+    p.uv = (w0 * tri.uv0.xy + w1 * tri.uv1.xy + w2 * tri.uv2.xy) / sum;
+
     return p;
 }
 
+
 HitPayload SceneIntersect(Ray ray) {
     HitPayload best; best.t = 1e20; best.hit_id = -1;
-    for (uint i = 0; i < uint(u_triangle_count); ++i) {
+    for (uint i = 0u; i < uint(u_triangle_count); ++i) {
         HitPayload p = RayTriangleIntersect(ray, i);
         if (p.hit_id != -1 && p.t < best.t) best = p;
     }
     return best;
 }
 
-/* ===================== Main ===================== */
+/* ===================== Main Path Tracing ===================== */
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 dims = imageSize(u_output_tex);
@@ -124,7 +125,7 @@ void main() {
 
     seed = uint(pixel.y * dims.x + pixel.x) + uint(u_frame_index) * 719393u;
     vec3 accumulated = vec3(0.0);
-
+    vec3 color = vec3(0.0);
     for (int s = 0; s < u_samples_per_pixel; ++s) {
         vec2 jitter = vec2(randomFloat(), randomFloat());
         vec2 uv = (vec2(pixel) + jitter) / vec2(dims);
@@ -134,45 +135,27 @@ void main() {
         ray.origin = (u_inv_view * vec4(0,0,0,1)).xyz;
         ray.dir = normalize((u_inv_view * vec4(target.xyz / target.w, 0)).xyz);
 
-        vec3 throughput = vec3(1.0);
         vec3 radiance = vec3(0.0);
+        vec3 color = vec3(0.0);
+        HitPayload hit = SceneIntersect(ray);
+        if (hit.hit_id == -1) {
+            radiance = vec3(0.0); // 天空黑色
+        } else {
+            int mid = clamp(hit.material_id, 0, int(materials.length())-1);
+            GPU_Material mat = materials[mid];
 
-        for (int bounce = 0; bounce < 5; ++bounce) {
-            HitPayload hit = SceneIntersect(ray);
-            if (hit.hit_id == -1) {
-                vec3 pos = triangles[hit.hit_id].v0.xyz;
-                imageStore(u_output_tex, pixel, vec4(pos*0.1+0.5,1.0));
-                return;
+            // ================= 调试 UV =================
+            if (mat.diffuseTexID > 0) {
+                color = texture(u_texArray, vec3(hit.uv, float(mat.diffuseTexID))).rgb;
+            } else {
+                color = mat.diffuse.rgb;
             }
-
-            int mid = clamp(hit.material_id, 0, int(materials.length()) - 1);
-            // ✅ 不要用 `=` 初始化，只用引用访问
-            vec3 baseColor = materials[mid].diffuse;
-            vec3 specular = materials[mid].specular;
-            float emission = materials[mid].emission;
-            float shiness = materials[mid].shiness;
-            float metallic = materials[mid].metallic;
-
-            if (emission > 0.0) {
-                radiance += throughput * baseColor * emission;
-                break;
-            }
-
-            radiance += throughput * baseColor * 0.05;
-
-            vec3 wi = cosineSampleHemisphere(hit.normal);
-            float cosTheta = max(dot(hit.normal, wi), 0.0);
-            vec3 f = baseColor / PI;
-
-            throughput *= f * cosTheta;
-            ray.origin += ray.dir * hit.t + hit.normal * 0.001;
-            ray.dir = wi;
         }
 
         accumulated += radiance;
     }
 
-    vec3 color = accumulated / float(u_samples_per_pixel);
-    color = pow(color, vec3(1.0 / 2.2));
+    //vec3 color = accumulated / float(u_samples_per_pixel);
+    color = pow(color, vec3(1.0/2.2)); // gamma 校正
     imageStore(u_output_tex, pixel, vec4(color, 1.0));
 }

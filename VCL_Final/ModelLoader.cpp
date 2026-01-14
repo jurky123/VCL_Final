@@ -1,4 +1,4 @@
-#define STB_IMAGE_IMPLEMENTATION
+ï»¿#define STB_IMAGE_IMPLEMENTATION
 #include "ModelLoader.h"
 bool ModelLoader::LoadMTL(const std::string& path, std::unordered_map<std::string, Material>& outMaterials) {
     std::ifstream fin(path);
@@ -21,16 +21,16 @@ bool ModelLoader::LoadMTL(const std::string& path, std::unordered_map<std::strin
             if (!currentName.empty())
                 outMaterials[currentName] = currentMat;
             iss >> currentName;
-            currentMat = Material(); // ÖØÖÃ²ÄÖÊ
+            currentMat = Material(); // é‡ç½®æè´¨
         }
         else if (cmd == "Ka") iss >> currentMat.ambient.r >> currentMat.ambient.g >> currentMat.ambient.b;
         else if (cmd == "Kd") iss >> currentMat.diffuse.r >> currentMat.diffuse.g >> currentMat.diffuse.b;
         else if (cmd == "Ks") iss >> currentMat.specular.r >> currentMat.specular.g >> currentMat.specular.b;
         else if (cmd == "Ns") iss >> currentMat.shiness;
         else if (cmd == "map_Kd") {
-            iss >> currentMat.diffuseTexPath;               // ÏÈ¶ÁÈ¡ÎÄ¼şÃû
+            iss >> currentMat.diffuseTexPath;               // å…ˆè¯»å–æ–‡ä»¶å
             std::string texPath = baseDir + "/" + currentMat.diffuseTexPath;
-            currentMat.diffuseTex = LoadTexture(texPath);  // ÔÙ¼ÓÔØ
+            currentMat.diffuseTex = LoadTexture(texPath);  // å†åŠ è½½
         }
     }
 
@@ -60,14 +60,14 @@ bool ModelLoader::LoadModel(const std::string& path,
 
     std::string objDir = std::filesystem::path(path).parent_path().string();
 
-    // --- ½âÎö MTL ²ÄÖÊ ---
+    // --- è§£æ MTL æè´¨ ---
     std::unordered_map<std::string, Material> mtlMaterials;
     if (scene->mMaterials && scene->mNumMaterials > 0) {
         for (unsigned int i = 0; i < scene->mNumMaterials; i++) {
             aiMaterial* aiMat = scene->mMaterials[i];
             aiString texPath;
             if (aiMat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS) {
-                // ÓĞÌùÍ¼µÄÇé¿ö
+                // æœ‰è´´å›¾çš„æƒ…å†µ
                 Material mat;
                 mat.diffuseTexPath = objDir + "/" + texPath.C_Str();
                 mtlMaterials[aiMat->GetName().C_Str()] = mat;
@@ -75,7 +75,7 @@ bool ModelLoader::LoadModel(const std::string& path,
         }
     }
 
-    // Ä¬ÈÏ²ÄÖÊ
+    // é»˜è®¤æè´¨
     if (defaultMaterialID == UINT32_MAX || defaultMaterialID >= materials.size()) {
         Material defaultMat(glm::vec3(1.0f));
         materials.push_back(defaultMat);
@@ -93,7 +93,7 @@ bool ModelLoader::LoadSceneFromYAML(const std::string& yamlPath) {
     materials.clear();
     materialNameToID.clear();
     nextMaterialID = 0;
-    lights.clear(); // ĞÂÔöµÆ¹âÈİÆ÷
+    lights.clear(); // æ–°å¢ç¯å…‰å®¹å™¨
 
     YAML::Node config;
     try {
@@ -166,7 +166,7 @@ bool ModelLoader::LoadSceneFromYAML(const std::string& yamlPath) {
         for (auto const& mat : config["Materials"]) {
             std::string name = mat["Name"].as<std::string>();
 
-            Material m; // Ä¬ÈÏÈ«°×
+            Material m; // é»˜è®¤å…¨ç™½
             m.diffuse = glm::vec3(1.0f);
             m.emission = 0.0f;
             m.metallic = 0.0f;
@@ -215,14 +215,14 @@ bool ModelLoader::LoadSceneFromYAML(const std::string& yamlPath) {
 
         std::string meshPath = baseDir + "/" + node["Mesh"].as<std::string>();
 
-        uint32_t materialID = 0; // Ä¬ÈÏ²ÄÖÊ
+        uint32_t materialID = 0; // é»˜è®¤æè´¨
         if (node["Material"]) {
             std::string matName = node["Material"].as<std::string>();
             if (materialNameToID.count(matName))
                 materialID = materialNameToID[matName];
         }
 
-        // µ÷ÓÃ LoadModel£¬»á×Ô¶¯ÓÃÄ¬ÈÏ²ÄÖÊ ID=0 Èç¹ûÃ»Ö¸¶¨
+        // è°ƒç”¨ LoadModelï¼Œä¼šè‡ªåŠ¨ç”¨é»˜è®¤æè´¨ ID=0 å¦‚æœæ²¡æŒ‡å®š
         LoadModel(meshPath, glm::mat4(1.0f), materialID);
     }
 
@@ -235,7 +235,7 @@ void ModelLoader::SetupRasterMesh(const std::vector<Triangle>& tris, const Mater
     unsigned int idx = 0;
 
     for (auto& tri : tris) {
-        // Ã¿¸ö¶¥µã: position + baseColor
+        // æ¯ä¸ªé¡¶ç‚¹: position + baseColor
         auto addVertex = [&](const glm::vec4& v) {
             vertices.push_back(v.x);
             vertices.push_back(v.y);
@@ -278,17 +278,17 @@ void ModelLoader::SetupRasterMesh(const std::vector<Triangle>& tris, const Mater
 void ModelLoader::CreateRasterMeshes(std::vector<Mesh>& meshes) {
     meshes.clear();
 
-    // °´²ÄÖÊ·Ö×é
+    // æŒ‰æè´¨åˆ†ç»„
     std::unordered_map<uint32_t, std::vector<Triangle>> matGroups;
     for (auto& tri : triangles) {
         matGroups[tri.material_id].push_back(tri);
     }
 
     for (auto& [matID, tris] : matGroups) {
-        // Ê¹ÓÃ ConvertToMesh£¬°Ñ Triangle ×ª³É Mesh£¬²¢ÉÏ´« VAO/VBO/EBO
-        Mesh mesh = ConvertToMesh(tris, materials[matID]);
-
-        // log ÓÃÓÚµ÷ÊÔ
+        // ä½¿ç”¨ ConvertToMeshï¼ŒæŠŠ Triangle è½¬æˆ Meshï¼Œå¹¶ä¸Šä¼  VAO/VBO/EBO
+        Mesh mesh = ConvertToMesh(tris, matID);
+        mesh.material_index = mesh.material.id;
+        // log ç”¨äºè°ƒè¯•
         std::cout << "Created mesh for material " << matID
             << " with " << mesh.vertices.size() << " vertices, "
             << mesh.indices.size() << " indices" << std::endl;
@@ -297,16 +297,34 @@ void ModelLoader::CreateRasterMeshes(std::vector<Mesh>& meshes) {
     }
 }
 
-Mesh ModelLoader::ConvertToMesh(const std::vector<Triangle>& tris, const Material& mat) {
+Mesh ModelLoader::ConvertToMesh(
+    const std::vector<Triangle>& tris,
+    int material_index
+) {
     Mesh mesh;
-    mesh.material = mat;
+
+    // â­ æ ¸å¿ƒï¼šåŒæ—¶ä¿å­˜ material å’Œ index
+    mesh.material_index = material_index;
+    mesh.material = materials[material_index];
 
     for (const auto& t : tris) {
-        // Triangle µÄ v0/v1/v2 ÊÇ vec4£¬Ã»ÓĞ·¨Ïß/uv£¬ËùÒÔ¸øÄ¬ÈÏÖµ
-        MeshVertex v0{ glm::vec3(t.v0), t.n0, t.uv0 };
-        MeshVertex v1{ glm::vec3(t.v1), t.n1, t.uv1 };
-        MeshVertex v2{ glm::vec3(t.v2), t.n2, t.uv2 };
+        MeshVertex v0{
+            glm::vec3(t.v0),
+            glm::vec3(t.n0),
+            glm::vec2(t.uv0)
+        };
 
+        MeshVertex v1{
+            glm::vec3(t.v1),
+            glm::vec3(t.n1),
+            glm::vec2(t.uv1)
+        };
+
+        MeshVertex v2{
+            glm::vec3(t.v2),
+            glm::vec3(t.n2),
+            glm::vec2(t.uv2)
+        };
 
         uint32_t startIndex = static_cast<uint32_t>(mesh.vertices.size());
         mesh.vertices.push_back(v0);
@@ -319,10 +337,11 @@ Mesh ModelLoader::ConvertToMesh(const std::vector<Triangle>& tris, const Materia
     }
 
     mesh.indexCount = mesh.indices.size();
-    mesh.setupGL();  // ÉÏ´« VAO/VBO/EBO
+    mesh.setupGL();
 
     return mesh;
 }
+
 void ModelLoader::ProcessNode(aiNode* node,
     const aiScene* scene,
     const glm::mat4& transform,
@@ -340,10 +359,10 @@ void ModelLoader::ProcessNode(aiNode* node,
             if (mtlMaterials.count(matName)) {
                 Material mat = mtlMaterials.at(matName);
 
-                // ºËĞÄĞŞ¸´£ºÈ·±£ diffuseTex ¸³Öµ¸ø mat.diffuseTex
+                // æ ¸å¿ƒä¿®å¤ï¼šç¡®ä¿ diffuseTex èµ‹å€¼ç»™ mat.diffuseTex
                 if (!mat.diffuseTexPath.empty()) {
                     GLuint texID = LoadTexture(mat.diffuseTexPath);
-                    mat.diffuseTex = texID; // ¡û ÕâÀï±ØĞë¸³Öµ¸ø diffuseTex
+                    mat.diffuseTex = texID; // â† è¿™é‡Œå¿…é¡»èµ‹å€¼ç»™ diffuseTex
                 }
 
                 materialID = nextMaterialID++;
@@ -353,19 +372,20 @@ void ModelLoader::ProcessNode(aiNode* node,
         }
 
         ExtractTriangles(mesh, transform, materialID);
+        assert(materialID < materials.size());
     }
 
     for (unsigned int i = 0; i < node->mNumChildren; i++)
         ProcessNode(node->mChildren[i], scene, transform, defaultMaterialID, mtlMaterials);
 }
 GLuint ModelLoader::LoadTexture(const std::string& path) {
-    // Èç¹ûÖ®Ç°ÒÑ¾­¼ÓÔØ¹ı£¬Ö±½Ó·µ»Ø
+    // å¦‚æœä¹‹å‰å·²ç»åŠ è½½è¿‡ï¼Œç›´æ¥è¿”å›
     if (loadedTextures.count(path)) {
         return loadedTextures[path];
     }
 
     int width, height, nrChannels;
-    stbi_set_flip_vertically_on_load(true); // ¸ù¾İĞèÒª·­×ªÍ¼Æ¬
+    stbi_set_flip_vertically_on_load(true); // æ ¹æ®éœ€è¦ç¿»è½¬å›¾ç‰‡
     unsigned char* data = stbi_load(path.c_str(), &width, &height, &nrChannels, 0);
     if (!data) {
         std::cerr << "Failed to load texture: " << path << std::endl;
@@ -389,7 +409,7 @@ GLuint ModelLoader::LoadTexture(const std::string& path) {
     glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
     glGenerateMipmap(GL_TEXTURE_2D);
 
-    // ÉèÖÃÄ¬ÈÏ²ÉÑù²ÎÊı
+    // è®¾ç½®é»˜è®¤é‡‡æ ·å‚æ•°
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
@@ -403,6 +423,12 @@ void ModelLoader::ExtractTriangles(aiMesh* mesh,
     const glm::mat4& transform,
     uint32_t materialID) {
 
+    bool hasUV = mesh->HasTextureCoords(0);
+    if (hasUV)
+        std::cout << "Mesh " << mesh->mName.C_Str() << " has UVs" << std::endl;
+    else
+        std::cout << "Mesh " << mesh->mName.C_Str() << " has NO UVs" << std::endl;
+
     for (unsigned int i = 0; i < mesh->mNumFaces; i++) {
         const aiFace& face = mesh->mFaces[i];
         if (face.mNumIndices != 3)
@@ -411,34 +437,45 @@ void ModelLoader::ExtractTriangles(aiMesh* mesh,
         Triangle tri;
 
         auto getVertex = [&](unsigned int idx) {
+            unsigned int vertIdx = face.mIndices[idx];
+
+            // --- é¡¶ç‚¹ä½ç½® ---
             glm::vec4 pos = transform * glm::vec4(
-                mesh->mVertices[face.mIndices[idx]].x,
-                mesh->mVertices[face.mIndices[idx]].y,
-                mesh->mVertices[face.mIndices[idx]].z,
+                mesh->mVertices[vertIdx].x,
+                mesh->mVertices[vertIdx].y,
+                mesh->mVertices[vertIdx].z,
                 1.0f
             );
 
-            glm::vec3 normal(0, 1, 0);
+            // --- æ³•çº¿ ---
+            glm::vec4 normal(0, 1, 0, 0);
             if (mesh->HasNormals()) {
-                aiVector3D n = mesh->mNormals[face.mIndices[idx]];
-                normal = glm::normalize(glm::vec3(n.x, n.y, n.z));
+                aiVector3D n = mesh->mNormals[vertIdx];
+                normal = glm::vec4(glm::normalize(glm::vec3(n.x, n.y, n.z)), 0.0f);
             }
 
-            glm::vec2 uv(0.0f);
-            if (mesh->HasTextureCoords(0)) {
-                aiVector3D t = mesh->mTextureCoords[0][face.mIndices[idx]];
-                uv = glm::vec2(t.x, t.y);
+            // --- UV ---
+            glm::vec4 uv(0.0f, 0.0f, 0.0f, 0.0f);
+            if (hasUV && vertIdx < mesh->mNumVertices) {
+                aiVector3D t = mesh->mTextureCoords[0][vertIdx];
+                uv.x = t.x;
+                uv.y = t.y;
+                // æ‰“å°è°ƒè¯• UV
+                // std::cout << "Vertex " << vertIdx << " UV: " << uv.x << ", " << uv.y << std::endl;
             }
 
             return std::make_tuple(pos, normal, uv);
-            };
+        };
 
         std::tie(tri.v0, tri.n0, tri.uv0) = getVertex(0);
         std::tie(tri.v1, tri.n1, tri.uv1) = getVertex(1);
         std::tie(tri.v2, tri.n2, tri.uv2) = getVertex(2);
 
+        // æè´¨ ID
         tri.material_id = materialID;
+        tri.pad0 = tri.pad1 = tri.pad2 = 0; // padding
 
         triangles.push_back(tri);
     }
 }
+

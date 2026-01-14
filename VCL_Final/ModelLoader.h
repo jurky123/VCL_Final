@@ -52,7 +52,10 @@ public:
 
     void CreateRasterMeshes(std::vector<Mesh>& meshes);
 
-    Mesh ConvertToMesh(const std::vector<Triangle>& tris, const Material& mat);
+    Mesh ConvertToMesh(
+        const std::vector<Triangle>& tris,
+        int material_index
+    );
     bool LoadMTL(const std::string& path, std::unordered_map<std::string, Material>& outMaterials);
 
 
