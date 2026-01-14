@@ -18,6 +18,7 @@ const unsigned int SCR_WIDTH = 1200;
 const unsigned int SCR_HEIGHT = 800;
 const int SIDEBAR_WIDTH = 300;
 GLuint ssboMaterials = 0;
+GLuint ssboLights = 0;
 bool ptTrianglesDirty = true;
 Camera camera;
 float lastX = (SCR_WIDTH - SIDEBAR_WIDTH) / 2.0f + SIDEBAR_WIDTH;
@@ -27,6 +28,8 @@ float deltaTime = 0.0f;
 float lastFrame = 0.0f;
 int frameIndex = 0;
 bool isRendering = false; // 初始为预览模式
+int pathTracerMaxBounces =1; // 默认最多1 次反射
+int pathTracerSamplesPerPixel =1; // 默认每像素采样次数
 
 // 场景与 SSBO
 unsigned int ssboTriangles;
@@ -193,6 +196,42 @@ void UploadMaterialsSSBO() {
 
     std::cout << "[SSBO] Uploaded " << gpuMats.size() << " materials\n";
 }
+void UploadLightsSSBO() {
+     struct GPU_Light_CPU {
+         int type;
+         int pad0;
+         int pad1;
+         int pad2;
+         glm::vec4 position;
+         glm::vec4 direction;
+         glm::vec4 intensity;
+     };
+
+     std::vector<GPU_Light_CPU> gpuLights;
+     gpuLights.reserve(loader.lights.size());
+     for (auto &l : loader.lights) {
+         GPU_Light_CPU gl;
+         gl.type = (l.type == Light::Point) ?0 :1;
+         gl.pad0 = gl.pad1 = gl.pad2 =0;
+         gl.position = glm::vec4(l.position,1.0f);
+         gl.direction = glm::vec4(glm::normalize(l.direction),0.0f);
+         gl.intensity = glm::vec4(l.intensity,0.0f);
+         gpuLights.push_back(gl);
+     }
+
+     if (ssboLights ==0) glGenBuffers(1, &ssboLights);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboLights);
+     if (!gpuLights.empty()) {
+        glBufferData(GL_SHADER_STORAGE_BUFFER, gpuLights.size() * sizeof(GPU_Light_CPU), gpuLights.data(), GL_STATIC_DRAW);
+     } else {
+        glBufferData(GL_SHADER_STORAGE_BUFFER,0, nullptr, GL_STATIC_DRAW);
+     }
+     glBindBufferBase(GL_SHADER_STORAGE_BUFFER,4, ssboLights);
+     glBindBuffer(GL_SHADER_STORAGE_BUFFER,0);
+
+     std::cout << "[SSBO] Uploaded " << gpuLights.size() << " lights\n";
+}
+
 
 // --- 回调函数 ---
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
@@ -278,10 +317,24 @@ int main() {
     LoadScene(scenePaths[currentSceneIndex]);
     
     loader.CreateRasterMeshes(sceneMeshes);
-    // 6. 上传 Material 数据
+    // Debug: 打印载入后的信息，帮助定位材质/mesh 分组问题
+    std::cout << "[Debug] loader.triangles=" << loader.triangles.size()
+    << ", loader.materials=" << loader.materials.size()
+    << ", sceneMeshes=" << sceneMeshes.size() << std::endl;
+    for (size_t i =0; i < std::min<size_t>(20, loader.triangles.size()); ++i) {
+    std::cout << "Tri[" << i << "] mat_id=" << loader.triangles[i].material_id << "\n";
+    }
+    for (size_t i =0; i < sceneMeshes.size(); ++i) {
+    std::cout << "Mesh[" << i << "] material_index=" << sceneMeshes[i].material_index
+    << ", diffuse=(" << sceneMeshes[i].material.diffuse.r << "," << sceneMeshes[i].material.diffuse.g << "," << sceneMeshes[i].material.diffuse.b << ")\n";
+    }
+
+    //6. 上传 Material 数据
     CreateMaterialTextureArray(loader.materials);
 
     UploadMaterialsSSBO();
+    // 上传灯光数据到 SSBO
+    UploadLightsSSBO();
 
 
     // 5. 上传 Triangle 数据
@@ -371,14 +424,32 @@ int main() {
         if (ImGui::Combo("Select Scene", &currentSceneIndex, items, 4)) {
             LoadScene(scenePaths[currentSceneIndex]);
             loader.CreateRasterMeshes(sceneMeshes);
+            // Debug: 打印载入后的信息，帮助定位材质/mesh 分组问题
+            std::cout << "[Debug] loader.triangles=" << loader.triangles.size()
+            << ", loader.materials=" << loader.materials.size()
+            << ", sceneMeshes=" << sceneMeshes.size() << std::endl;
+            for (size_t i =0; i < std::min<size_t>(20, loader.triangles.size()); ++i) {
+            std::cout << "Tri[" << i << "] mat_id=" << loader.triangles[i].material_id << "\n";
+            }
+            for (size_t i =0; i < sceneMeshes.size(); ++i) {
+            std::cout << "Mesh[" << i << "] material_index=" << sceneMeshes[i].material_index
+            << ", diffuse=(" << sceneMeshes[i].material.diffuse.r << "," << sceneMeshes[i].material.diffuse.g << "," << sceneMeshes[i].material.diffuse.b << ")\n";
+            }
+
+            //6. 上传 Material 数据
             CreateMaterialTextureArray(loader.materials);
 
             UploadMaterialsSSBO();
+            UploadLightsSSBO();
             renderDone = false;
         }
 
         ImGui::SliderFloat("FOV", &camera.Zoom, 1.0f, 3000.0f);
         ImGui::Text("Camera Speed: %.3f", camera.MovementSpeed);
+        
+        // Path tracer controls
+        ImGui::SliderInt("Max Bounces", &pathTracerMaxBounces,0,8);
+        ImGui::SliderInt("Samples Per Pixel", &pathTracerSamplesPerPixel,1,1024);
 
         if (ImGui::Button("Reset View")) {
             LoadScene(scenePaths[currentSceneIndex]);
@@ -386,6 +457,7 @@ int main() {
             CreateMaterialTextureArray(loader.materials);
 
             UploadMaterialsSSBO();
+            UploadLightsSSBO();
             renderDone = false;
         }
 
@@ -400,23 +472,16 @@ int main() {
         pathTracerShader.setMat4("u_inv_view", camera.GetInverseViewMatrix());
         pathTracerShader.setMat4("u_inv_proj", camera.GetInverseProjectionMatrix(aspect));
 
-        if (isRendering && !renderDone) {
-            pathTracerShader.setInt("u_is_rendering", 1);
-            pathTracerShader.setInt("u_samples_per_pixel", 1);
-            pathTracerShader.setInt("u_frame_index", 0);
-
-            glDispatchCompute((SCR_WIDTH + 15) / 16, (SCR_HEIGHT + 15) / 16, 1);
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-
-            renderDone = true;
-        }
+        // Do not dispatch compute here — dispatch will be done once when entering the
+        // path-tracing branch below. This avoids running the heavy compute shader
+        // every frame and freezing the UI.
 
         // 绘制到屏幕
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         if (isRendering) {
-            glViewport(SIDEBAR_WIDTH, 0, SCR_WIDTH - SIDEBAR_WIDTH, SCR_HEIGHT);
+            glViewport(SIDEBAR_WIDTH,0, SCR_WIDTH - SIDEBAR_WIDTH, SCR_HEIGHT);
 
             // --- Step 0: 生成 Path Tracing Triangles（只在场景更新时做一次） ---
             static std::vector<Triangle> ptTriangles;
@@ -466,28 +531,38 @@ int main() {
                 glActiveTexture(GL_TEXTURE3);
                 glBindTexture(GL_TEXTURE_2D_ARRAY, texArray);
             }
-            // --- Step 1: Dispatch Compute Shader ---
-            pathTracerShader.use();
+            // --- Step1: Dispatch Compute Shader once ---
+            if (!renderDone) {
+                pathTracerShader.use();
 
-            pathTracerShader.setInt("u_triangle_count", (int)ptTriangles.size());
-            pathTracerShader.setInt("u_material_count", (int)loader.materials.size());
-            pathTracerShader.setInt("u_frame_index", frameIndex);
-            pathTracerShader.setInt("u_samples_per_pixel", 1);
+                // bind texture array sampler to unit3
+                pathTracerShader.setInt("u_texArray",3);
+                // upload and bind lights SSBO and count
+                pathTracerShader.setInt("u_light_count", (int)loader.lights.size());
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER,4, ssboLights);
 
-            float aspect = float(SCR_WIDTH - SIDEBAR_WIDTH) / float(SCR_HEIGHT);
-            pathTracerShader.setMat4("u_inv_view", camera.GetInverseViewMatrix());
-            pathTracerShader.setMat4("u_inv_proj", camera.GetInverseProjectionMatrix(aspect));
+                pathTracerShader.setInt("u_triangle_count", (int)ptTriangles.size());
+                pathTracerShader.setInt("u_material_count", (int)loader.materials.size());
+                pathTracerShader.setInt("u_frame_index",0);
+                pathTracerShader.setInt("u_samples_per_pixel",pathTracerSamplesPerPixel);
+                pathTracerShader.setInt("u_max_bounces", pathTracerMaxBounces);
 
-            glBindImageTexture(0, texOutput, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboTriangles);
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboMaterials);
+                float aspect = float(SCR_WIDTH - SIDEBAR_WIDTH) / float(SCR_HEIGHT);
+                pathTracerShader.setMat4("u_inv_view", camera.GetInverseViewMatrix());
+                pathTracerShader.setMat4("u_inv_proj", camera.GetInverseProjectionMatrix(aspect));
 
-            GLuint groupX = (SCR_WIDTH + 15) / 16;
-            GLuint groupY = (SCR_HEIGHT + 15) / 16;
-            glDispatchCompute(groupX, groupY, 1);
+                glBindImageTexture(0, texOutput,0, GL_FALSE,0, GL_READ_WRITE, GL_RGBA32F);
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER,1, ssboTriangles);
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER,2, ssboMaterials);
 
-            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+                GLuint groupX = (SCR_WIDTH +15) /16;
+                GLuint groupY = (SCR_HEIGHT +15) /16;
+                glDispatchCompute(groupX, groupY,1);
 
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+                renderDone = true; // only dispatch once
+            }
             // --- Step 2: 渲染到屏幕 ---
             screenShader.use();
             glBindVertexArray(quadVAO);
@@ -497,12 +572,7 @@ int main() {
             glDrawArrays(GL_TRIANGLES, 0, 6);
 
             frameIndex++;
-        }
-
-
-
-
-        else {
+        } else {
             // --- 光栅化渲染 ---
             glEnable(GL_DEPTH_TEST);
 
@@ -512,31 +582,34 @@ int main() {
                 float(SCR_WIDTH - SIDEBAR_WIDTH) / SCR_HEIGHT, 0.1f, 10000.0f));
             rasterShader.setVec3("u_cam_pos", camera.Position);
 
+            // 设置环境光默认值，确保未使用贴图时也有基础亮度
+            rasterShader.setVec3("u_ambient", glm::vec3(0.1f));
+
             // 灯光传递
             int light_count = std::min((int)loader.lights.size(), 16);
             rasterShader.setInt("u_light_count", light_count);
-            for (int i = 0; i < light_count; i++) {
+            for (int i =0; i < light_count; i++) {
                 rasterShader.setVec3("u_light_positions[" + std::to_string(i) + "]", loader.lights[i].position);
                 rasterShader.setVec3("u_light_intensities[" + std::to_string(i) + "]", loader.lights[i].intensity);
             }
 
             // 绘制 Mesh
             for (auto& mesh : sceneMeshes) {
-                // 传材质属性
+                //传材质属性
                 rasterShader.setVec3("diffuse", mesh.material.diffuse);
                 rasterShader.setVec3("specular", mesh.material.specular);
                 rasterShader.setFloat("shiness", mesh.material.shiness);
                 rasterShader.setFloat("emission", mesh.material.emission);
 
-                // 传贴图信息
+                //传贴图信息
                 if (mesh.material.diffuseTex) {
                     glActiveTexture(GL_TEXTURE0);
                     glBindTexture(GL_TEXTURE_2D, mesh.material.diffuseTex);
-                    rasterShader.setInt("u_diffuseTex", 0);
-                    rasterShader.setInt("hasDiffuseTex", 1); // 必须加上
+                    rasterShader.setInt("u_diffuseTex",0);
+                    rasterShader.setInt("hasDiffuseTex",1); // 必须加上
                 }
                 else {
-                    rasterShader.setInt("hasDiffuseTex", 0);
+                    rasterShader.setInt("hasDiffuseTex",0);
                 }
 
                 glBindVertexArray(mesh.VAO);

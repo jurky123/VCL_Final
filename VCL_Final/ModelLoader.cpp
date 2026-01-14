@@ -43,7 +43,7 @@ bool ModelLoader::LoadMTL(const std::string& path, std::unordered_map<std::strin
 }
 bool ModelLoader::LoadModel(const std::string& path,
     const glm::mat4& transform,
-    uint32_t defaultMaterialID)
+    uint32_t defaultMaterialID, bool forceMaterial)
 {
     Assimp::Importer importer;
     const aiScene* scene = importer.ReadFile(
@@ -99,7 +99,7 @@ bool ModelLoader::LoadModel(const std::string& path,
     }
 
     glm::mat4 rootTransform = transform * aiMatrix4x4ToGlm(scene->mRootNode->mTransformation);
-    ProcessNode(scene->mRootNode, scene, rootTransform, defaultMaterialID, mtlMaterials);
+    ProcessNode(scene->mRootNode, scene, rootTransform, defaultMaterialID, mtlMaterials,forceMaterial);
 
     return true;
 }
@@ -228,18 +228,22 @@ bool ModelLoader::LoadSceneFromYAML(const std::string& yamlPath) {
 
     for (auto const& node : modelsNode) {
         if (!node["Mesh"]) continue;
-
         std::string meshPath = baseDir + "/" + node["Mesh"].as<std::string>();
 
-        uint32_t materialID = 0; // 默认材质
+        uint32_t materialID = 0;
+        bool forceThisModel = false; // 默认为 false，使用模型贴图
+
         if (node["Material"]) {
+            // 如果 YAML 明确写了 Material 字段，我们认为用户想覆盖模型贴图
             std::string matName = node["Material"].as<std::string>();
-            if (materialNameToID.count(matName))
+            if (materialNameToID.count(matName)) {
                 materialID = materialNameToID[matName];
+                forceThisModel = true; // 开启强制模式
+            }
         }
 
-        // 调用 LoadModel，会自动用默认材质 ID=0 如果没指定
-        LoadModel(meshPath, glm::mat4(1.0f), materialID);
+        // 调用 LoadModel 时传入 forceThisModel
+        LoadModel(meshPath, glm::mat4(1.0f), materialID, forceThisModel);
     }
 
     return true;
@@ -374,63 +378,59 @@ void ModelLoader::ProcessNode(aiNode* node,
     const aiScene* scene,
     const glm::mat4& transform,
     uint32_t defaultMaterialID,
-    const std::unordered_map<std::string, Material>& mtlMaterials)
+    const std::unordered_map<std::string, Material>& mtlMaterials,
+    bool forceMaterial) // 必须传入此参数
 {
     for (unsigned int i = 0; i < node->mNumMeshes; i++) {
         aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
+
+        // 初始设为 YAML 传入的默认材质 ID
         uint32_t materialID = defaultMaterialID;
 
-        std::string meshName = mesh->mName.C_Str();
-        std::string matName = "";
-
-        if (mesh->mMaterialIndex < scene->mNumMaterials) {
+        // --- 核心逻辑：只有在不强制要求使用 YAML 材质时，才解析模型自带材质 ---
+        if (!forceMaterial && mesh->mMaterialIndex < scene->mNumMaterials) {
             aiMaterial* aiMat = scene->mMaterials[mesh->mMaterialIndex];
-            matName = aiMat->GetName().C_Str();
+            std::string matName = aiMat->GetName().C_Str();
 
-            // 优先复用已记录的 materialNameToID（防止重复创建/错位）
+            // 1. 尝试复用已经加载过的材质 ID
             if (materialNameToID.count(matName)) {
                 materialID = materialNameToID[matName];
-                std::cout << "[DBG] Mesh '" << meshName << "' -> reuse material '" << matName
-                    << "' id=" << materialID << "\n";
             }
+            // 2. 否则，如果该材质存在于之前 LoadMTL 预加载的结果中，则创建新材质
             else if (mtlMaterials.count(matName)) {
-                // 从 mtlMaterials 中取出信息，创建新的 Material 并登记 id
                 Material mat = mtlMaterials.at(matName);
 
-                // 如果有贴图路径，加载贴图并记录 GL 纹理 id
-                bool texLoaded = false;
+                // 处理贴图加载
                 if (!mat.diffuseTexPath.empty()) {
-                    GLuint texID = LoadTexture(mat.diffuseTexPath);
-                    mat.diffuseTex = texID;
-                    texLoaded = (texID != 0);
+                    mat.diffuseTex = LoadTexture(mat.diffuseTexPath);
                 }
 
                 materialID = nextMaterialID++;
+                mat.id = static_cast<int>(materialID);
                 materials.push_back(mat);
-                materials.back().id = static_cast<int>(materialID);
                 materialNameToID[matName] = materialID;
 
-                std::cout << "[DBG] Mesh '" << meshName << "' -> created material '" << matName
-                    << "' id=" << materialID << " texLoaded=" << (texLoaded ? "yes" : "no") << "\n";
+                std::cout << "[Compatible] Created model material: " << matName << " ID: " << materialID << "\n";
             }
         }
-        
+        else if (forceMaterial) {
+            // 如果是强制材质模式，不进入上述逻辑，直接保持使用 defaultMaterialID
+            // 这通常发生在 YAML 中明确写了 Material: "XXX" 的时候
+        }
 
-        // 边界检查：防止 materialID 越界导致错位
-        if (materials.empty() || materialID >= materials.size()) {
-            
+        // 边界安全检查
+        if (materials.empty() || materialID >= (uint32_t)materials.size()) {
             materialID = 0;
         }
 
-        // 最终确认打印（便于跟踪哪个 mesh 哪个 id）
-        
-
+        // 提取三角形数据
         ExtractTriangles(mesh, transform, materialID);
-        assert(materialID < materials.size());
     }
 
-    for (unsigned int i = 0; i < node->mNumChildren; i++)
-        ProcessNode(node->mChildren[i], scene, transform, defaultMaterialID, mtlMaterials);
+    // 递归子节点，注意透传 forceMaterial 参数
+    for (unsigned int i = 0; i < node->mNumChildren; i++) {
+        ProcessNode(node->mChildren[i], scene, transform, defaultMaterialID, mtlMaterials, forceMaterial);
+    }
 }
 GLuint ModelLoader::LoadTexture(const std::string& path) {
     // 如果之前已经加载过，直接返回
@@ -536,4 +536,3 @@ void ModelLoader::ExtractTriangles(aiMesh* mesh,
         triangles.push_back(tri);
     }
 }
-

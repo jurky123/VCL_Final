@@ -12,7 +12,7 @@ vec4 FragColor;
 uniform vec3 diffuse;
 uniform vec3 specular;
 uniform float shiness; // 建议 32~128
-uniform vec3 emission;
+uniform float emission; // 改为 float，与 CPU端 setFloat 对齐
 
 uniform int u_light_count;
 uniform vec3 u_light_positions[16];
@@ -22,7 +22,7 @@ uniform vec3 u_cam_pos;
 
 uniform sampler2D u_diffuseTex;
 uniform int hasDiffuseTex;
-uniform vec3 u_ambient = vec3(0.1); // 调低环境光防止过亮
+uniform vec3 u_ambient; // 环境光由 CPU端设置
 
 void main()
 {
@@ -34,8 +34,8 @@ void main()
     if (hasDiffuseTex == 1)
         baseColor = texture(u_diffuseTex, vTexCoords).rgb;
 
-    // 初始颜色：环境 + 自发光
-    vec3 color = baseColor * u_ambient + emission;
+    // 初始颜色：环境 + 自发光（发光作为基色乘子）
+    vec3 color = baseColor * u_ambient + baseColor * emission;
 
     for (int i = 0; i < u_light_count; i++)
     {

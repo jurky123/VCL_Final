@@ -19,6 +19,21 @@ layout(std430, binding = 2) buffer MaterialBuffer {
     GPU_Material materials[];
 };
 
+// GPU 光源结构（std430 对齐安全，使用 vec4 保证对齐）
+struct GPU_Light {
+    int type; //0 = Point,1 = Directional
+    int pad0;
+    int pad1;
+    int pad2;
+    vec4 position; // world space position (w unused)
+    vec4 direction; // direction (w unused)
+    vec4 intensity; // rgb = intensity, a unused
+};
+
+layout(std430, binding = 4) buffer LightBuffer {
+    GPU_Light lights[];
+};
+
 struct Triangle {
     vec4 v0;
     vec4 v1;
@@ -40,15 +55,15 @@ layout(std430, binding = 1) buffer TriangleBuffer {
     Triangle triangles[];
 };
 
-/* ===================== PBR函数===================== */
-// (保持原来的 PBR 函数不变，略去这里，为节省篇幅)
-
 /* ===================== Uniforms ===================== */
 uniform mat4 u_inv_view;
 uniform mat4 u_inv_proj;
 uniform int  u_frame_index;
 uniform int  u_triangle_count;
 uniform int  u_samples_per_pixel;
+uniform int  u_material_count; // 使用 CPU端上传的材质数量
+uniform int  u_light_count; // 使用 CPU端上传的灯光数量
+uniform int  u_max_bounces; // 最大反射/漫反射跳数
 
 /* ===================== RNG ===================== */
 uint seed;
@@ -58,6 +73,21 @@ uint nextRandom() {
     return (word >> 22u) ^ word;
 }
 float randomFloat() { return float(nextRandom()) / 4294967296.0; }
+
+// cosine-weighted hemisphere sample
+vec3 cosineSampleHemisphere(float u1, float u2) {
+    float r = sqrt(u1);
+    float theta = 2.0 * PI * u2;
+    float x = r * cos(theta);
+    float y = r * sin(theta);
+    float z = sqrt(max(0.0, 1.0 - u1));
+    return vec3(x, y, z);
+}
+
+vec3 makeOrthonormalBasis(vec3 n) {
+    // placeholder not used
+    return n;
+}
 
 /* ===================== Ray / Intersection ===================== */
 struct Ray { vec3 origin; vec3 dir; };
@@ -117,7 +147,7 @@ HitPayload SceneIntersect(Ray ray) {
     return best;
 }
 
-/* ===================== Main Path Tracing ===================== */
+/* ===================== Main Path Tracing (多跳) ===================== */
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     ivec2 dims = imageSize(u_output_tex);
@@ -135,24 +165,78 @@ void main() {
         ray.origin = (u_inv_view * vec4(0,0,0,1)).xyz;
         ray.dir = normalize((u_inv_view * vec4(target.xyz / target.w, 0)).xyz);
 
+        vec3 throughput = vec3(1.0);
         vec3 radiance = vec3(0.0);
-        HitPayload hit = SceneIntersect(ray);
-        if (hit.hit_id == -1) {
-            radiance = vec3(0.0); // 天空黑色（可改为颜色环境光）
-        } else {
-            int mid = clamp(hit.material_id, 0, int(materials.length())-1);
-            GPU_Material mat = materials[mid];
 
-            vec3 albedo;
-            if (mat.diffuseTexID > 0) {
-                // 注意：在 CPU 端我们把层索引从 1 开始分配，所以读取时需要 -1
-                albedo = texture(u_texArray, vec3(hit.uv, float(mat.diffuseTexID - 1))).rgb;
-            } else {
-                albedo = mat.diffuse.rgb;
+        // 路径追踪循环
+        for (int bounce = 0; bounce <= u_max_bounces; ++bounce) {
+            HitPayload hit = SceneIntersect(ray);
+            if (hit.hit_id == -1) {
+                // 没有击中，天空黑色(可扩展为环境色)
+                break;
             }
 
-            // 把 albedo 作为直接 radiance（这里仅作最简单的可视化 / debug）
-            radiance = albedo;
+            int mid = clamp(hit.material_id, 0, max(0, u_material_count - 1));
+            GPU_Material mat = materials[mid];
+
+            // 基础颜色
+            vec3 baseColor = (mat.diffuseTexID > 0) ? texture(u_texArray, vec3(hit.uv, float(mat.diffuseTexID - 1))).rgb : mat.diffuse.rgb;
+
+            // 命中位置
+            vec3 hitPos = ray.origin + ray.dir * hit.t;
+
+            // 发射
+            radiance += throughput * baseColor * mat.emission;
+
+            //直接光照（同前）
+            for (int li = 0; li < u_light_count; ++li) {
+                GPU_Light L = lights[li];
+                vec3 lightI = L.intensity.rgb;
+                float NdotL = 0.0;
+                float attenuation = 1.0;
+                vec3 Ldir;
+                bool occluded = false;
+
+                if (L.type == 1) {
+                    Ldir = normalize(-L.direction.xyz);
+                    NdotL = max(dot(hit.normal, Ldir), 0.0);
+                    Ray shadowRay; shadowRay.origin = hitPos + Ldir * 1e-4; shadowRay.dir = Ldir;
+                    HitPayload sh = SceneIntersect(shadowRay);
+                    if (sh.hit_id != -1) occluded = true;
+                } else {
+                    vec3 toLight = L.position.xyz - hitPos;
+                    float dist = length(toLight);
+                    Ldir = normalize(toLight);
+                    NdotL = max(dot(hit.normal, Ldir), 0.0);
+                    attenuation = 1.0 / (dist * dist + 1.0);
+                    Ray shadowRay; shadowRay.origin = hitPos + Ldir * 1e-4; shadowRay.dir = Ldir;
+                    HitPayload sh = SceneIntersect(shadowRay);
+                    if (sh.hit_id != -1 && sh.t < dist - 1e-4) occluded = true;
+                }
+                if (!occluded && NdotL > 0.0) {
+                    radiance += throughput * baseColor * lightI * NdotL * attenuation;
+                }
+            }
+
+            // 若已到达最大 bounce，不再产生次级光线
+            if (bounce == u_max_bounces) break;
+
+            //采样新的漫反射方向（余弦加权半球采样）
+            float r1 = randomFloat();
+            float r2 = randomFloat();
+            vec3 localDir = cosineSampleHemisphere(r1, r2);
+            // 构造切线空间
+            vec3 N = normalize(hit.normal);
+            vec3 tangent = normalize(abs(N.x) > 0.1 ? cross(vec3(0.0,1.0,0.0), N) : cross(vec3(1.0,0.0,0.0), N));
+            vec3 bitangent = cross(N, tangent);
+            vec3 newDir = normalize(localDir.x * tangent + localDir.y * bitangent + localDir.z * N);
+
+            // 更新 ray 与 throughput
+            ray.origin = hitPos + newDir * 1e-4;
+            ray.dir = newDir;
+            throughput *= baseColor;
+
+            // 简单 Russian roulette 可在此处加入（暂略）
         }
 
         accumulated += radiance;

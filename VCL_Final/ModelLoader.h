@@ -43,9 +43,9 @@ public:
 
     bool LoadModel(const std::string& path,
         const glm::mat4& transform = glm::mat4(1.0f),
-        uint32_t defaultMaterialID = UINT32_MAX); // 默认值表示未指定
+        uint32_t defaultMaterialID = UINT32_MAX, // 默认值表示未指定
+        bool forceMaterial = true); // forceMaterial 参数被添加到此处
         
-
     bool LoadSceneFromYAML(const std::string& yamlPath);
 
     void SetupRasterMesh(const std::vector<Triangle>& tris, const Material& mat, Mesh& mesh);
@@ -65,7 +65,8 @@ private:
         const aiScene* scene,
         const glm::mat4& transform,
         uint32_t defaultMaterialID,
-        const std::unordered_map<std::string, Material>& mtlMaterials);
+        const std::unordered_map<std::string, Material>& mtlMaterials,
+        bool forceMaterial = true);
 
     void ExtractTriangles(aiMesh* mesh,
         const glm::mat4& transform,
