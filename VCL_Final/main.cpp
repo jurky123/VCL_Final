@@ -45,27 +45,25 @@ GLuint texArray = 0; // 最终的纹理数组
 
 void CreateMaterialTextureArray(std::vector<Material>& materials)
 {
-
-    // ---------------- Step 1: 分配层索引 ----------------
-    int layerIndex = 0;
+    // ---------------- Step 1: 分配层索引（从 1 开始，0 表示无纹理） ----------------
+    int layerIndex = 1;
     for (auto& m : materials) {
         if (!m.diffuseTexPath.empty()) {
-            m.diffuseTexID = layerIndex++; // 有纹理的材质分配层
+            m.diffuseTexID = layerIndex++; // 有纹理的材质分配层，从 1 开始
         }
         else {
-            m.diffuseTexID = 0;           // 无纹理
+            m.diffuseTexID = 0;           // 0 表示无纹理
         }
     }
 
-    int texCount = layerIndex;
+    int texCount = layerIndex - 1;
     if (texCount == 0) return; // 没有纹理，直接返回
 
-    // ---------------- Step 2: 找出最大宽高 ----------------
+    // ---------------- Step 2: 找出最大宽高并加载所有图片 ----------------
     int maxWidth = 0, maxHeight = 0;
     std::vector<unsigned char*> loadedData(texCount, nullptr);
-    int idx = 0;
     for (auto& m : materials) {
-        if (m.diffuseTexID <= 0) continue;
+        if (m.diffuseTexID == 0) continue;
 
         int w, h, n;
         unsigned char* data = stbi_load(m.diffuseTexPath.c_str(), &w, &h, &n, 4);
@@ -74,7 +72,8 @@ void CreateMaterialTextureArray(std::vector<Material>& materials)
             m.diffuseTexID = 0;
             continue;
         }
-        loadedData[m.diffuseTexID] = data;
+        int layer = m.diffuseTexID - 1; // 存储在 loadedData 的 0-based 索引
+        loadedData[layer] = data;
 
         if (w > maxWidth) maxWidth = w;
         if (h > maxHeight) maxHeight = h;
@@ -87,9 +86,9 @@ void CreateMaterialTextureArray(std::vector<Material>& materials)
 
     // ---------------- Step 4: 上传每一层 ----------------
     for (auto& m : materials) {
-        if (m.diffuseTexID < 0) continue;
+        if (m.diffuseTexID == 0) continue;
 
-        int layer = m.diffuseTexID;
+        int layer = m.diffuseTexID - 1;
         unsigned char* data = loadedData[layer];
         if (!data) continue;
 
@@ -124,7 +123,6 @@ void CreateMaterialTextureArray(std::vector<Material>& materials)
     std::cout << "[TextureArray] Created with " << texCount << " layers, maxSize: "
         << maxWidth << "x" << maxHeight << "\n";
 }
-
 
 // --- 核心函数：加载场景到 GPU ---
 void LoadScene(const std::string& path) {
@@ -179,7 +177,8 @@ void UploadMaterialsSSBO() {
         gm.emission = m.emission;
         gm.metallic = m.metallic;
         gm.shiness = m.shiness;
-        gm.diffuseTexID = m.diffuseTex ? int(m.diffuseTex) : 0;
+        // 修正：把 layer 索引上传，而不是 GL 纹理对象名
+        gm.diffuseTexID = static_cast<int>(m.diffuseTexID);
         gpuMats.push_back(gm);
     }
 
@@ -194,7 +193,6 @@ void UploadMaterialsSSBO() {
 
     std::cout << "[SSBO] Uploaded " << gpuMats.size() << " materials\n";
 }
-
 
 // --- 回调函数 ---
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {

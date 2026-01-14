@@ -278,17 +278,31 @@ void ModelLoader::SetupRasterMesh(const std::vector<Triangle>& tris, const Mater
 void ModelLoader::CreateRasterMeshes(std::vector<Mesh>& meshes) {
     meshes.clear();
 
-    // 按材质分组
+    // 按材质分组（并做边界检查）
     std::unordered_map<uint32_t, std::vector<Triangle>> matGroups;
     for (auto& tri : triangles) {
-        matGroups[tri.material_id].push_back(tri);
+        uint32_t mid = tri.material_id;
+        if (mid >= materials.size()) {
+            std::cerr << "[Warning] Triangle has invalid material_id " << mid << ", fallback to 0\n";
+            mid = 0;
+        }
+        matGroups[mid].push_back(tri);
     }
 
-    for (auto& [matID, tris] : matGroups) {
-        // 使用 ConvertToMesh，把 Triangle 转成 Mesh，并上传 VAO/VBO/EBO
+    // 为保证可预测顺序，提取并排序 material id keys
+    std::vector<uint32_t> keys;
+    keys.reserve(matGroups.size());
+    for (auto const& kv : matGroups) keys.push_back(kv.first);
+    std::sort(keys.begin(), keys.end());
+
+    for (auto matID : keys) {
+        auto& tris = matGroups[matID];
+
+        // ConvertToMesh 已经将 mesh.material_index = material_index，但这里明确设置以防止不一致
         Mesh mesh = ConvertToMesh(tris, matID);
-        mesh.material_index = mesh.material.id;
-        // log 用于调试
+        mesh.material_index = static_cast<int>(matID);
+
+        // debug log
         std::cout << "Created mesh for material " << matID
             << " with " << mesh.vertices.size() << " vertices, "
             << mesh.indices.size() << " indices" << std::endl;
@@ -359,19 +373,22 @@ void ModelLoader::ProcessNode(aiNode* node,
             if (mtlMaterials.count(matName)) {
                 Material mat = mtlMaterials.at(matName);
 
-                // 核心修复：确保 diffuseTex 赋值给 mat.diffuseTex
+                // 确保 diffuseTex 赋值给 mat.diffuseTex
                 if (!mat.diffuseTexPath.empty()) {
                     GLuint texID = LoadTexture(mat.diffuseTexPath);
-                    mat.diffuseTex = texID; // ← 这里必须赋值给 diffuseTex
+                    mat.diffuseTex = texID;
                 }
 
+                // 分配新的材料 id 并把 id 写回到 materials 中
                 materialID = nextMaterialID++;
-                materialNameToID[matName] = materialID;
                 materials.push_back(mat);
+                materials.back().id = static_cast<int>(materialID);
+                materialNameToID[matName] = materialID;
             }
         }
 
         ExtractTriangles(mesh, transform, materialID);
+        // 运行时调试断言（debug 有用）
         assert(materialID < materials.size());
     }
 
