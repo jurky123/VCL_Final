@@ -28,9 +28,11 @@ bool ModelLoader::LoadMTL(const std::string& path, std::unordered_map<std::strin
         else if (cmd == "Ks") iss >> currentMat.specular.r >> currentMat.specular.g >> currentMat.specular.b;
         else if (cmd == "Ns") iss >> currentMat.shiness;
         else if (cmd == "map_Kd") {
-            iss >> currentMat.diffuseTexPath;               // 先读取文件名
-            std::string texPath = baseDir + "/" + currentMat.diffuseTexPath;
+            iss >> currentMat.diffuseTexPath;               // 先读取文件名（相对路径或文件名）
+            std::string texPath = baseDir + "/" + currentMat.diffuseTexPath; // 构造完整路径
             currentMat.diffuseTex = LoadTexture(texPath);  // 再加载
+            // 把完整路径回写回 diffuseTexPath，便于后续调试/使用
+            currentMat.diffuseTexPath = texPath;
         }
     }
 
@@ -60,18 +62,29 @@ bool ModelLoader::LoadModel(const std::string& path,
 
     std::string objDir = std::filesystem::path(path).parent_path().string();
 
-    // --- 解析 MTL 材质 ---
+    // --- 解析 Assimp 材质，抓取 Diffuse 颜色与 Diffuse 贴图（若有） ---
     std::unordered_map<std::string, Material> mtlMaterials;
     if (scene->mMaterials && scene->mNumMaterials > 0) {
         for (unsigned int i = 0; i < scene->mNumMaterials; i++) {
             aiMaterial* aiMat = scene->mMaterials[i];
-            aiString texPath;
-            if (aiMat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS) {
-                // 有贴图的情况
-                Material mat;
-                mat.diffuseTexPath = objDir + "/" + texPath.C_Str();
-                mtlMaterials[aiMat->GetName().C_Str()] = mat;
+            std::string name = aiMat->GetName().C_Str();
+            Material mat;
+            // 读取漫反射颜色（若存在）
+            aiColor3D color(1.0f, 1.0f, 1.0f);
+            if (AI_SUCCESS == aiMat->Get(AI_MATKEY_COLOR_DIFFUSE, color)) {
+                mat.diffuse = glm::vec3(color.r, color.g, color.b);
             }
+            // 读取漫反射贴图（若存在）
+            aiString texPath;
+            if (AI_SUCCESS == aiMat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath)) {
+                mat.diffuseTexPath = objDir + "/" + texPath.C_Str();
+                std::cout << "[ASSIMP] Mat '" << name << "' diffuseTexPath = " << mat.diffuseTexPath << "\n";
+            }
+            else {
+                std::cout << "[ASSIMP] Mat '" << name << "' diffuse color = ("
+                    << mat.diffuse.r << "," << mat.diffuse.g << "," << mat.diffuse.b << ")\n";
+            }
+            mtlMaterials[name] = mat;
         }
     }
 
@@ -80,6 +93,9 @@ bool ModelLoader::LoadModel(const std::string& path,
         Material defaultMat(glm::vec3(1.0f));
         materials.push_back(defaultMat);
         defaultMaterialID = static_cast<uint32_t>(materials.size() - 1);
+
+        // 必须同步 nextMaterialID，保证后续新建材质的 id 与 materials 的索引一致
+        nextMaterialID = static_cast<uint32_t>(materials.size());
     }
 
     glm::mat4 rootTransform = transform * aiMatrix4x4ToGlm(scene->mRootNode->mTransformation);
@@ -303,9 +319,7 @@ void ModelLoader::CreateRasterMeshes(std::vector<Mesh>& meshes) {
         mesh.material_index = static_cast<int>(matID);
 
         // debug log
-        std::cout << "Created mesh for material " << matID
-            << " with " << mesh.vertices.size() << " vertices, "
-            << mesh.indices.size() << " indices" << std::endl;
+        
 
         meshes.push_back(mesh);
     }
@@ -366,29 +380,52 @@ void ModelLoader::ProcessNode(aiNode* node,
         aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
         uint32_t materialID = defaultMaterialID;
 
+        std::string meshName = mesh->mName.C_Str();
+        std::string matName = "";
+
         if (mesh->mMaterialIndex < scene->mNumMaterials) {
             aiMaterial* aiMat = scene->mMaterials[mesh->mMaterialIndex];
-            std::string matName = aiMat->GetName().C_Str();
+            matName = aiMat->GetName().C_Str();
 
-            if (mtlMaterials.count(matName)) {
+            // 优先复用已记录的 materialNameToID（防止重复创建/错位）
+            if (materialNameToID.count(matName)) {
+                materialID = materialNameToID[matName];
+                std::cout << "[DBG] Mesh '" << meshName << "' -> reuse material '" << matName
+                    << "' id=" << materialID << "\n";
+            }
+            else if (mtlMaterials.count(matName)) {
+                // 从 mtlMaterials 中取出信息，创建新的 Material 并登记 id
                 Material mat = mtlMaterials.at(matName);
 
-                // 确保 diffuseTex 赋值给 mat.diffuseTex
+                // 如果有贴图路径，加载贴图并记录 GL 纹理 id
+                bool texLoaded = false;
                 if (!mat.diffuseTexPath.empty()) {
                     GLuint texID = LoadTexture(mat.diffuseTexPath);
                     mat.diffuseTex = texID;
+                    texLoaded = (texID != 0);
                 }
 
-                // 分配新的材料 id 并把 id 写回到 materials 中
                 materialID = nextMaterialID++;
                 materials.push_back(mat);
                 materials.back().id = static_cast<int>(materialID);
                 materialNameToID[matName] = materialID;
+
+                std::cout << "[DBG] Mesh '" << meshName << "' -> created material '" << matName
+                    << "' id=" << materialID << " texLoaded=" << (texLoaded ? "yes" : "no") << "\n";
             }
         }
+        
+
+        // 边界检查：防止 materialID 越界导致错位
+        if (materials.empty() || materialID >= materials.size()) {
+            
+            materialID = 0;
+        }
+
+        // 最终确认打印（便于跟踪哪个 mesh 哪个 id）
+        
 
         ExtractTriangles(mesh, transform, materialID);
-        // 运行时调试断言（debug 有用）
         assert(materialID < materials.size());
     }
 
@@ -398,7 +435,9 @@ void ModelLoader::ProcessNode(aiNode* node,
 GLuint ModelLoader::LoadTexture(const std::string& path) {
     // 如果之前已经加载过，直接返回
     if (loadedTextures.count(path)) {
-        return loadedTextures[path];
+        GLuint cached = loadedTextures[path];
+        std::cout << "[Texture] Reuse cached: " << path << " -> texID=" << cached << "\n";
+        return cached;
     }
 
     int width, height, nrChannels;
@@ -434,6 +473,8 @@ GLuint ModelLoader::LoadTexture(const std::string& path) {
 
     stbi_image_free(data);
     loadedTextures[path] = textureID;
+
+    
     return textureID;
 }
 void ModelLoader::ExtractTriangles(aiMesh* mesh,
