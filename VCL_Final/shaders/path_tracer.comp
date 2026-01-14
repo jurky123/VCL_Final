@@ -55,11 +55,26 @@ layout(std430, binding = 1) buffer TriangleBuffer {
     Triangle triangles[];
 };
 
+// Sphere primitive
+struct Sphere {
+    vec4 pos; // xyz = center, w = radius
+    vec4 emission; // rgb
+    vec4 color; // rgb
+    int type; //0=DIFF,1=SPEC,2=REFR
+    float ior; // index of refraction
+    int pad0;
+    int pad1;
+};
+layout(std430, binding = 5) buffer SphereBuffer {
+    Sphere spheres[];
+};
+
 /* ===================== Uniforms ===================== */
 uniform mat4 u_inv_view;
 uniform mat4 u_inv_proj;
 uniform int  u_frame_index;
 uniform int  u_triangle_count;
+uniform int  u_sphere_count;
 uniform int  u_samples_per_pixel;
 uniform int  u_material_count; // 使用 CPU端上传的材质数量
 uniform int  u_light_count; // 使用 CPU端上传的灯光数量
@@ -137,9 +152,36 @@ HitPayload RayTriangleIntersect(Ray ray, uint idx) {
     return p;
 }
 
+HitPayload RaySphereIntersect(Ray ray, int idx) {
+    HitPayload p;
+    p.hit_id = -1;
+
+    Sphere s = spheres[idx];
+    vec3 center = s.pos.xyz;
+    float radius = s.pos.w;
+    vec3 oc = ray.origin - center;
+    float b = dot(oc, ray.dir);
+    float c = dot(oc, oc) - radius * radius;
+    float det = b * b - c;
+    if (det < 0.0) return p;
+    det = sqrt(det);
+    float t = -b - det;
+    if (t < 0.001) t = -b + det;
+    if (t < 0.001) return p;
+    p.t = t;
+    p.normal = normalize((ray.origin + ray.dir * t) - center);
+    p.material_id = -1; // sphere marker
+    p.hit_id = - (idx + 1);
+    p.uv = vec2(0.0);
+    return p;
+}
 
 HitPayload SceneIntersect(Ray ray) {
     HitPayload best; best.t = 1e20; best.hit_id = -1;
+    for (int i = 0; i < u_sphere_count; ++i) {
+        HitPayload p = RaySphereIntersect(ray, i);
+        if (p.hit_id != -1 && p.t < best.t) best = p;
+    }
     for (uint i = 0u; i < uint(u_triangle_count); ++i) {
         HitPayload p = RayTriangleIntersect(ray, i);
         if (p.hit_id != -1 && p.t < best.t) best = p;
@@ -176,19 +218,34 @@ void main() {
                 break;
             }
 
-            int mid = clamp(hit.material_id, 0, max(0, u_material_count - 1));
-            GPU_Material mat = materials[mid];
+            vec3 baseColor;
+            vec3 normal;
+            float emission = 0.0;
+            int matType = 0; //0 diffuse,1 spec,2 refr
+            float ior = 1.0;
 
-            // 基础颜色
-            vec3 baseColor = (mat.diffuseTexID > 0) ? texture(u_texArray, vec3(hit.uv, float(mat.diffuseTexID - 1))).rgb : mat.diffuse.rgb;
+            if (hit.hit_id < 0) {
+                int sidx = -hit.hit_id - 1;
+                Sphere S = spheres[sidx];
+                baseColor = S.color.rgb;
+                normal = hit.normal;
+                emission = S.emission.r; // assume grayscale emission stored in r
+                matType = S.type;
+                ior = S.ior;
+            } else {
+                int mid = clamp(hit.material_id, 0, max(0, u_material_count - 1));
+                GPU_Material mat = materials[mid];
+                baseColor = (mat.diffuseTexID > 0) ? texture(u_texArray, vec3(hit.uv, float(mat.diffuseTexID - 1))).rgb : mat.diffuse.rgb;
+                normal = normalize(hit.normal);
+                emission = mat.emission;
+                matType = (mat.metallic > 0.9) ? 1 : 0;
+                ior = 1.5;
+            }
 
-            // 命中位置
             vec3 hitPos = ray.origin + ray.dir * hit.t;
+            radiance += throughput * baseColor * emission;
 
-            // 发射
-            radiance += throughput * baseColor * mat.emission;
-
-            //直接光照（同前）
+            // 直接光照
             for (int li = 0; li < u_light_count; ++li) {
                 GPU_Light L = lights[li];
                 vec3 lightI = L.intensity.rgb;
@@ -199,7 +256,7 @@ void main() {
 
                 if (L.type == 1) {
                     Ldir = normalize(-L.direction.xyz);
-                    NdotL = max(dot(hit.normal, Ldir), 0.0);
+                    NdotL = max(dot(normal, Ldir), 0.0);
                     Ray shadowRay; shadowRay.origin = hitPos + Ldir * 1e-4; shadowRay.dir = Ldir;
                     HitPayload sh = SceneIntersect(shadowRay);
                     if (sh.hit_id != -1) occluded = true;
@@ -207,7 +264,7 @@ void main() {
                     vec3 toLight = L.position.xyz - hitPos;
                     float dist = length(toLight);
                     Ldir = normalize(toLight);
-                    NdotL = max(dot(hit.normal, Ldir), 0.0);
+                    NdotL = max(dot(normal, Ldir), 0.0);
                     attenuation = 1.0 / (dist * dist + 1.0);
                     Ray shadowRay; shadowRay.origin = hitPos + Ldir * 1e-4; shadowRay.dir = Ldir;
                     HitPayload sh = SceneIntersect(shadowRay);
@@ -221,22 +278,57 @@ void main() {
             // 若已到达最大 bounce，不再产生次级光线
             if (bounce == u_max_bounces) break;
 
-            //采样新的漫反射方向（余弦加权半球采样）
-            float r1 = randomFloat();
-            float r2 = randomFloat();
-            vec3 localDir = cosineSampleHemisphere(r1, r2);
-            // 构造切线空间
-            vec3 N = normalize(hit.normal);
-            vec3 tangent = normalize(abs(N.x) > 0.1 ? cross(vec3(0.0,1.0,0.0), N) : cross(vec3(1.0,0.0,0.0), N));
-            vec3 bitangent = cross(N, tangent);
-            vec3 newDir = normalize(localDir.x * tangent + localDir.y * bitangent + localDir.z * N);
-
-            // 更新 ray 与 throughput
-            ray.origin = hitPos + newDir * 1e-4;
-            ray.dir = newDir;
-            throughput *= baseColor;
-
-            // 简单 Russian roulette 可在此处加入（暂略）
+            if (matType == 0) {
+                // diffuse
+                float r1 = randomFloat();
+                float r2 = randomFloat();
+                vec3 localDir = cosineSampleHemisphere(r1, r2);
+                vec3 N = normalize(normal);
+                vec3 tangent = normalize(abs(N.x) > 0.1 ? cross(vec3(0.0,1.0,0.0), N) : cross(vec3(1.0,0.0,0.0), N));
+                vec3 bitangent = cross(N, tangent);
+                vec3 newDir = normalize(localDir.x * tangent + localDir.y * bitangent + localDir.z * N);
+                ray.origin = hitPos + newDir * 1e-4;
+                ray.dir = newDir;
+                throughput *= baseColor;
+            } else if (matType == 1) {
+                // mirror
+                vec3 R = reflect(ray.dir, normalize(normal));
+                ray.origin = hitPos + R * 1e-4;
+                ray.dir = R;
+                throughput *= baseColor;
+            } else {
+                // dielectric refraction (Schlick)
+                vec3 N = normalize(normal);
+                vec3 refl = reflect(ray.dir, N);
+                bool into = dot(ray.dir, N) < 0.0;
+                float nc = 1.0;
+                float nt = ior;
+                float nnt = into ? nc / nt : nt / nc;
+                float ddn = dot(ray.dir, N);
+                float cos2t = 1.0 - nnt*nnt * (1.0 - ddn*ddn);
+                if (cos2t < 0.0) {
+                    // total internal reflection
+                    ray.origin = hitPos + refl * 1e-4;
+                    ray.dir = refl;
+                    throughput *= baseColor;
+                } else {
+                    vec3 tdir = normalize(ray.dir * nnt - N * ((into?1.0:-1.0)*(ddn*nnt + sqrt(cos2t))));
+                    float R0 = pow((nt - nc) / (nt + nc),2.0);
+                    float c = 1.0 - (into ? -ddn : dot(tdir, N));
+                    float Re = R0 + (1.0 - R0) * pow(c,5.0);
+                    float Tr = 1.0 - Re;
+                    float P = 0.25 + 0.5 * Re;
+                    if (randomFloat() < P) {
+                        ray.origin = hitPos + refl * 1e-4;
+                        ray.dir = refl;
+                        throughput *= baseColor * (Re / P);
+                    } else {
+                        ray.origin = hitPos + tdir * 1e-4;
+                        ray.dir = tdir;
+                        throughput *= baseColor * (Tr / (1.0 - P));
+                    }
+                }
+            }
         }
 
         accumulated += radiance;

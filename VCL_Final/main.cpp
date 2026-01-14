@@ -19,6 +19,7 @@ const unsigned int SCR_HEIGHT = 800;
 const int SIDEBAR_WIDTH = 300;
 GLuint ssboMaterials = 0;
 GLuint ssboLights = 0;
+GLuint ssboSpheres = 0;
 bool ptTrianglesDirty = true;
 Camera camera;
 float lastX = (SCR_WIDTH - SIDEBAR_WIDTH) / 2.0f + SIDEBAR_WIDTH;
@@ -28,13 +29,24 @@ float deltaTime = 0.0f;
 float lastFrame = 0.0f;
 int frameIndex = 0;
 bool isRendering = false; // 初始为预览模式
-int pathTracerMaxBounces =1; // 默认最多1 次反射
-int pathTracerSamplesPerPixel =1; // 默认每像素采样次数
+int pathTracerMaxBounces = 1; // 默认最多1 次反射
+int pathTracerSamplesPerPixel = 1; // 默认每像素采样次数
 
 // 场景与 SSBO
 unsigned int ssboTriangles;
 ModelLoader loader;
 std::vector<Mesh> sceneMeshes;
+// CPU-side sphere representation used by UI and SSBO uploads
+struct CPU_Sphere {
+    glm::vec4 pos; // xyz = center, w = radius
+    glm::vec4 emission; // rgb
+    glm::vec4 color; // rgb
+    int type; //0=DIFF,1=SPEC,2=REFR
+    float ior;
+    int pad0;
+    int pad1;
+};
+std::vector<CPU_Sphere> cpuSpheres;
 //------------debug-----------
 std::vector<std::string> scenePaths = {
     "models/slime.obj",
@@ -167,7 +179,7 @@ void LoadScene(const std::string& path) {
     }
     ptTrianglesDirty = true;
     std::vector<std::string> texPaths;
-    
+
 
 }
 void UploadMaterialsSSBO() {
@@ -197,41 +209,82 @@ void UploadMaterialsSSBO() {
     std::cout << "[SSBO] Uploaded " << gpuMats.size() << " materials\n";
 }
 void UploadLightsSSBO() {
-     struct GPU_Light_CPU {
-         int type;
-         int pad0;
-         int pad1;
-         int pad2;
-         glm::vec4 position;
-         glm::vec4 direction;
-         glm::vec4 intensity;
-     };
+    struct GPU_Light_CPU {
+        int type;
+        int pad0;
+        int pad1;
+        int pad2;
+        glm::vec4 position;
+        glm::vec4 direction;
+        glm::vec4 intensity;
+    };
 
-     std::vector<GPU_Light_CPU> gpuLights;
-     gpuLights.reserve(loader.lights.size());
-     for (auto &l : loader.lights) {
-         GPU_Light_CPU gl;
-         gl.type = (l.type == Light::Point) ?0 :1;
-         gl.pad0 = gl.pad1 = gl.pad2 =0;
-         gl.position = glm::vec4(l.position,1.0f);
-         gl.direction = glm::vec4(glm::normalize(l.direction),0.0f);
-         gl.intensity = glm::vec4(l.intensity,0.0f);
-         gpuLights.push_back(gl);
-     }
+    std::vector<GPU_Light_CPU> gpuLights;
+    gpuLights.reserve(loader.lights.size());
+    for (auto& l : loader.lights) {
+        GPU_Light_CPU gl;
+        gl.type = (l.type == Light::Point) ? 0 : 1;
+        gl.pad0 = gl.pad1 = gl.pad2 = 0;
+        gl.position = glm::vec4(l.position, 1.0f);
+        gl.direction = glm::vec4(glm::normalize(l.direction), 0.0f);
+        gl.intensity = glm::vec4(l.intensity, 0.0f);
+        gpuLights.push_back(gl);
+    }
 
-     if (ssboLights ==0) glGenBuffers(1, &ssboLights);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboLights);
-     if (!gpuLights.empty()) {
+    if (ssboLights == 0) glGenBuffers(1, &ssboLights);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboLights);
+    if (!gpuLights.empty()) {
         glBufferData(GL_SHADER_STORAGE_BUFFER, gpuLights.size() * sizeof(GPU_Light_CPU), gpuLights.data(), GL_STATIC_DRAW);
-     } else {
-        glBufferData(GL_SHADER_STORAGE_BUFFER,0, nullptr, GL_STATIC_DRAW);
-     }
-     glBindBufferBase(GL_SHADER_STORAGE_BUFFER,4, ssboLights);
-     glBindBuffer(GL_SHADER_STORAGE_BUFFER,0);
+    }
+    else {
+        glBufferData(GL_SHADER_STORAGE_BUFFER, 0, nullptr, GL_STATIC_DRAW);
+    }
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, ssboLights);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
-     std::cout << "[SSBO] Uploaded " << gpuLights.size() << " lights\n";
+    std::cout << "[SSBO] Uploaded " << gpuLights.size() << " lights\n";
 }
 
+void UploadSpheresSSBO() {
+    if (ssboSpheres ==0) glGenBuffers(1, &ssboSpheres);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboSpheres);
+    if (!cpuSpheres.empty()) {
+        glBufferData(GL_SHADER_STORAGE_BUFFER, cpuSpheres.size() * sizeof(CPU_Sphere), cpuSpheres.data(), GL_STATIC_DRAW);
+    } else {
+        glBufferData(GL_SHADER_STORAGE_BUFFER,0, nullptr, GL_STATIC_DRAW);
+    }
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER,5, ssboSpheres);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER,0);
+
+    std::cout << "[SSBO] Uploaded " << cpuSpheres.size() << " spheres\n";
+}
+void PrintSceneInfo() {
+    // Debug: 打印载入后的信息，帮助定位材质/mesh 分组问题
+    std::cout << "[Debug] loader.triangles=" << loader.triangles.size()
+        << ", loader.materials=" << loader.materials.size()
+        << ", sceneMeshes=" << sceneMeshes.size() << std::endl;
+    for (size_t i = 0; i < std::min<size_t>(20, loader.triangles.size()); ++i) {
+        std::cout << "Tri[" << i << "] mat_id=" << loader.triangles[i].material_id << "\n";
+    }
+    for (size_t i = 0; i < sceneMeshes.size(); ++i) {
+        std::cout << "Mesh[" << i << "] material_index=" << sceneMeshes[i].material_index
+            << ", diffuse=(" << sceneMeshes[i].material.diffuse.r << "," << sceneMeshes[i].material.diffuse.g << "," << sceneMeshes[i].material.diffuse.b << ")\n";
+    }
+
+    // 打印灯光信息
+    for (size_t i = 0; i < loader.lights.size(); ++i) {
+        const auto& l = loader.lights[i];
+        std::cout << "Light[" << i << "] pos=(" << l.position.x << "," << l.position.y << "," << l.position.z << "), "
+            << "intensity=(" << l.intensity.r << "," << l.intensity.g << "," << l.intensity.b << ")\n";
+    }
+
+    // 打印球体信息 (from cpuSpheres)
+    for (size_t i =0; i < cpuSpheres.size(); ++i) {
+        const auto& s = cpuSpheres[i];
+        std::cout << "Sphere[" << i << "] pos=(" << s.pos.x << "," << s.pos.y << "," << s.pos.z << "), "
+            << "radius=" << s.pos.w << "\n";
+    }
+}
 
 // --- 回调函数 ---
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
@@ -286,7 +339,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    
+
 
 
     GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "Path Tracer Lab - Offline Mode", NULL, NULL);
@@ -315,26 +368,16 @@ int main() {
 
     // 4. 加载场景
     LoadScene(scenePaths[currentSceneIndex]);
-    
-    loader.CreateRasterMeshes(sceneMeshes);
-    // Debug: 打印载入后的信息，帮助定位材质/mesh 分组问题
-    std::cout << "[Debug] loader.triangles=" << loader.triangles.size()
-    << ", loader.materials=" << loader.materials.size()
-    << ", sceneMeshes=" << sceneMeshes.size() << std::endl;
-    for (size_t i =0; i < std::min<size_t>(20, loader.triangles.size()); ++i) {
-    std::cout << "Tri[" << i << "] mat_id=" << loader.triangles[i].material_id << "\n";
-    }
-    for (size_t i =0; i < sceneMeshes.size(); ++i) {
-    std::cout << "Mesh[" << i << "] material_index=" << sceneMeshes[i].material_index
-    << ", diffuse=(" << sceneMeshes[i].material.diffuse.r << "," << sceneMeshes[i].material.diffuse.g << "," << sceneMeshes[i].material.diffuse.b << ")\n";
-    }
 
+    loader.CreateRasterMeshes(sceneMeshes);
+    PrintSceneInfo();
     //6. 上传 Material 数据
     CreateMaterialTextureArray(loader.materials);
 
     UploadMaterialsSSBO();
     // 上传灯光数据到 SSBO
     UploadLightsSSBO();
+    UploadSpheresSSBO();
 
 
     // 5. 上传 Triangle 数据
@@ -346,7 +389,7 @@ int main() {
 
 
 
-    
+
     // 7. 全屏 Quad
     float quadVertices[] = {
         -1,  1, 0, 0, 1,
@@ -402,8 +445,18 @@ int main() {
         ImGui::Text("Triangles: %d", (int)loader.triangles.size());
         ImGui::Separator();
 
-        if (ImGui::Checkbox("Enable Path Tracing", &isRendering))
+        if (ImGui::Checkbox("Enable Path Tracing", &isRendering)) {
             renderDone = false;
+            // reset accumulation
+            frameIndex = 0;
+            // clear output texture to zeros to start fresh
+            if (texOutput) {
+                glBindTexture(GL_TEXTURE_2D, texOutput);
+                std::vector<float> zeros(SCR_WIDTH * SCR_HEIGHT * 4, 0.0f);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_RGBA, GL_FLOAT, zeros.data());
+                glBindTexture(GL_TEXTURE_2D, 0);
+            }
+        }
 
         if (isRendering) {
             ImGui::TextColored(ImVec4(1, 0.5, 0, 1), "Mode: PATH TRACING");
@@ -424,32 +477,29 @@ int main() {
         if (ImGui::Combo("Select Scene", &currentSceneIndex, items, 4)) {
             LoadScene(scenePaths[currentSceneIndex]);
             loader.CreateRasterMeshes(sceneMeshes);
-            // Debug: 打印载入后的信息，帮助定位材质/mesh 分组问题
-            std::cout << "[Debug] loader.triangles=" << loader.triangles.size()
-            << ", loader.materials=" << loader.materials.size()
-            << ", sceneMeshes=" << sceneMeshes.size() << std::endl;
-            for (size_t i =0; i < std::min<size_t>(20, loader.triangles.size()); ++i) {
-            std::cout << "Tri[" << i << "] mat_id=" << loader.triangles[i].material_id << "\n";
-            }
-            for (size_t i =0; i < sceneMeshes.size(); ++i) {
-            std::cout << "Mesh[" << i << "] material_index=" << sceneMeshes[i].material_index
-            << ", diffuse=(" << sceneMeshes[i].material.diffuse.r << "," << sceneMeshes[i].material.diffuse.g << "," << sceneMeshes[i].material.diffuse.b << ")\n";
-            }
+            PrintSceneInfo();
 
             //6. 上传 Material 数据
             CreateMaterialTextureArray(loader.materials);
 
             UploadMaterialsSSBO();
             UploadLightsSSBO();
+            UploadSpheresSSBO();
             renderDone = false;
+            frameIndex = 0; // reset accumulation when scene changes
+            if (texOutput) {
+                glBindTexture(GL_TEXTURE_2D, texOutput);
+                std::vector<float> zeros(SCR_WIDTH * SCR_HEIGHT * 4, 0.0f);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_RGBA, GL_FLOAT, zeros.data());
+                glBindTexture(GL_TEXTURE_2D, 0);
+            }
         }
-
         ImGui::SliderFloat("FOV", &camera.Zoom, 1.0f, 3000.0f);
         ImGui::Text("Camera Speed: %.3f", camera.MovementSpeed);
-        
+
         // Path tracer controls
-        ImGui::SliderInt("Max Bounces", &pathTracerMaxBounces,0,8);
-        ImGui::SliderInt("Samples Per Pixel", &pathTracerSamplesPerPixel,1,1024);
+        ImGui::SliderInt("Max Bounces", &pathTracerMaxBounces, 0, 8);
+        ImGui::SliderInt("Samples Per Pixel", &pathTracerSamplesPerPixel, 1, 1024);
 
         if (ImGui::Button("Reset View")) {
             LoadScene(scenePaths[currentSceneIndex]);
@@ -458,121 +508,97 @@ int main() {
 
             UploadMaterialsSSBO();
             UploadLightsSSBO();
+            UploadSpheresSSBO();
             renderDone = false;
+            frameIndex = 0;
+            if (texOutput) {
+                glBindTexture(GL_TEXTURE_2D, texOutput);
+                std::vector<float> zeros(SCR_WIDTH * SCR_HEIGHT * 4, 0.0f);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_RGBA, GL_FLOAT, zeros.data());
+                glBindTexture(GL_TEXTURE_2D, 0);
+            }
         }
 
+        // Hard-coded SmallPT scene
+        if (ImGui::Button("Load smallpt scene")) {
+            // clear triangle geometry and CPU materials
+            loader.triangles.clear();
+            loader.materials.clear();
+            sceneMeshes.clear();
+
+            cpuSpheres.clear();
+            auto addS = [&](float rad, glm::vec3 p, glm::vec3 e, glm::vec3 c, int type, float ior) {
+                CPU_Sphere s{};
+                s.pos = glm::vec4(p, rad);
+                s.emission = glm::vec4(e, 0.0f);
+                s.color = glm::vec4(c, 0.0f);
+                s.type = type;
+                s.ior = ior;
+                s.pad0 = s.pad1 = 0;
+                cpuSpheres.push_back(s);
+                };
+            // smallpt default scene
+            addS(1e5f, glm::vec3(1e5f + 1, 40.8f, 81.6f), glm::vec3(0.0f), glm::vec3(.75f, .25f, .25f), 0, 1.0f); // left
+            addS(1e5f, glm::vec3(-1e5f + 99, 40.8f, 81.6f), glm::vec3(0.0f), glm::vec3(.25f, .25f, .75f), 0, 1.0f); // right
+            addS(1e5f, glm::vec3(50, 40.8f, 1e5f), glm::vec3(0.0f), glm::vec3(.75f, .75f, .75f), 0, 1.0f); // back
+            addS(1e5f, glm::vec3(50, 40.8f, -1e5f + 170), glm::vec3(0.0f), glm::vec3(0.0f), 0, 1.0f); // front
+            addS(1e5f, glm::vec3(50, 1e5f, 81.6f), glm::vec3(0.0f), glm::vec3(.75f, .75f, .75f), 0, 1.0f); // bottom
+            addS(1e5f, glm::vec3(50, -1e5f + 81.6f, 81.6f), glm::vec3(0.0f), glm::vec3(.75f, .75f, .75f), 0, 1.0f); // top
+            addS(16.5f, glm::vec3(27, 16.5f, 47), glm::vec3(0.0f), glm::vec3(.999f, .999f, .999f), 1, 1.0f); // mirror
+            addS(16.5f, glm::vec3(73, 16.5f, 78), glm::vec3(0.0f), glm::vec3(.999f, .999f, .999f), 2, 1.5f); // glass
+            addS(600.0f, glm::vec3(50,681.6f - .27f,81.6f), glm::vec3(12.0f,12.0f,12.0f), glm::vec3(0.0f),0,1.0f); // light
+
+            UploadSpheresSSBO();
+
+            // set camera to smallpt default
+            camera.Position = glm::vec3(50.0f,52.0f,295.6f);
+            camera.Forward = glm::normalize(glm::vec3(0.0f, -0.042612f, -1.0f));
+            camera.Zoom =45.0f;
+            camera.Yaw = glm::degrees(atan2(camera.Forward.z, camera.Forward.x));
+            camera.Pitch = glm::degrees(asin(camera.Forward.y));
+        }
         ImGui::End();
 
         // --- 路径追踪 ---
         pathTracerShader.use();
         pathTracerShader.setInt("u_triangle_count", (int)loader.triangles.size());
         pathTracerShader.setInt("u_material_count", (int)loader.materials.size());
+        pathTracerShader.setInt("u_sphere_count", (int)cpuSpheres.size());
+        pathTracerShader.setInt("u_frame_index", frameIndex);
+        // perform1 sample per dispatch to keep each compute call short
+        pathTracerShader.setInt("u_samples_per_pixel", 1);
+        pathTracerShader.setInt("u_max_bounces", pathTracerMaxBounces);
 
         float aspect = float(SCR_WIDTH - SIDEBAR_WIDTH) / float(SCR_HEIGHT);
         pathTracerShader.setMat4("u_inv_view", camera.GetInverseViewMatrix());
         pathTracerShader.setMat4("u_inv_proj", camera.GetInverseProjectionMatrix(aspect));
 
-        // Do not dispatch compute here — dispatch will be done once when entering the
-        // path-tracing branch below. This avoids running the heavy compute shader
-        // every frame and freezing the UI.
+        glBindImageTexture(0, texOutput, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboTriangles);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboMaterials);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, ssboSpheres);
 
-        // 绘制到屏幕
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        GLuint groupX = (SCR_WIDTH + 15) / 16;
+        GLuint groupY = (SCR_HEIGHT + 15) / 16;
+        glDispatchCompute(groupX, groupY, 1);
 
-        if (isRendering) {
-            glViewport(SIDEBAR_WIDTH,0, SCR_WIDTH - SIDEBAR_WIDTH, SCR_HEIGHT);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
-            // --- Step 0: 生成 Path Tracing Triangles（只在场景更新时做一次） ---
-            static std::vector<Triangle> ptTriangles;
+        // increment frame index (accumulated samples)
+        frameIndex++;
+        if (frameIndex >= pathTracerSamplesPerPixel) {
+            renderDone = true;
+        }
 
-            if (ptTrianglesDirty) {
-                ptTriangles.clear();
-
-                for (auto& mesh : sceneMeshes) {
-                    for (size_t i = 0; i < mesh.indices.size(); i += 3) {
-                        Triangle tri;
-
-                        uint32_t idx0 = mesh.indices[i];
-                        uint32_t idx1 = mesh.indices[i + 1];
-                        uint32_t idx2 = mesh.indices[i + 2];
-
-                        tri.v0 = glm::vec4(mesh.vertices[idx0].position, 1.0f);
-                        tri.v1 = glm::vec4(mesh.vertices[idx1].position, 1.0f);
-                        tri.v2 = glm::vec4(mesh.vertices[idx2].position, 1.0f);
-
-                        tri.n0 = glm::vec4(mesh.vertices[idx0].normal, 0.0f);
-                        tri.n1 = glm::vec4(mesh.vertices[idx1].normal, 0.0f);
-                        tri.n2 = glm::vec4(mesh.vertices[idx2].normal, 0.0f);
-
-                        tri.uv0 = glm::vec4(mesh.vertices[idx0].uv, 0.0f, 0.0f);
-                        tri.uv1 = glm::vec4(mesh.vertices[idx1].uv, 0.0f, 0.0f);
-                        tri.uv2 = glm::vec4(mesh.vertices[idx2].uv, 0.0f, 0.0f);
-
-                        tri.material_id = mesh.material_index; // ✅ 使用索引
-
-                        ptTriangles.push_back(tri);
-                    }
-                    ptTrianglesDirty = false;
-                }
-                for (int i = 0; i < 10 && i < ptTriangles.size(); ++i)
-                    std::cout << "Tri " << i << " material_id=" << ptTriangles[i].material_id << "\n";
-                // 上传到 GPU
-                glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboTriangles);
-                glBufferData(GL_SHADER_STORAGE_BUFFER,
-                    ptTriangles.size() * sizeof(Triangle),
-                    ptTriangles.data(),
-                    GL_STATIC_DRAW);
-                glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-                ptTrianglesDirty = false; // 只上传一次
-            }
-            if (texArray != 0) {
-                glActiveTexture(GL_TEXTURE3);
-                glBindTexture(GL_TEXTURE_2D_ARRAY, texArray);
-            }
-            // --- Step1: Dispatch Compute Shader once ---
-            if (!renderDone) {
-                pathTracerShader.use();
-
-                // bind texture array sampler to unit3
-                pathTracerShader.setInt("u_texArray",3);
-                // upload and bind lights SSBO and count
-                pathTracerShader.setInt("u_light_count", (int)loader.lights.size());
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER,4, ssboLights);
-
-                pathTracerShader.setInt("u_triangle_count", (int)ptTriangles.size());
-                pathTracerShader.setInt("u_material_count", (int)loader.materials.size());
-                pathTracerShader.setInt("u_frame_index",0);
-                pathTracerShader.setInt("u_samples_per_pixel",pathTracerSamplesPerPixel);
-                pathTracerShader.setInt("u_max_bounces", pathTracerMaxBounces);
-
-                float aspect = float(SCR_WIDTH - SIDEBAR_WIDTH) / float(SCR_HEIGHT);
-                pathTracerShader.setMat4("u_inv_view", camera.GetInverseViewMatrix());
-                pathTracerShader.setMat4("u_inv_proj", camera.GetInverseProjectionMatrix(aspect));
-
-                glBindImageTexture(0, texOutput,0, GL_FALSE,0, GL_READ_WRITE, GL_RGBA32F);
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER,1, ssboTriangles);
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER,2, ssboMaterials);
-
-                GLuint groupX = (SCR_WIDTH +15) /16;
-                GLuint groupY = (SCR_HEIGHT +15) /16;
-                glDispatchCompute(groupX, groupY,1);
-
-                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-
-                renderDone = true; // only dispatch once
-            }
-            // --- Step 2: 渲染到屏幕 ---
-            screenShader.use();
-            glBindVertexArray(quadVAO);
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, texOutput);
-            screenShader.setInt("u_texOutput", 0);
-            glDrawArrays(GL_TRIANGLES, 0, 6);
-
-            frameIndex++;
-        } else {
+        // --- Step2: 渲染到屏幕 ---
+        screenShader.use();
+        glBindVertexArray(quadVAO);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texOutput);
+        screenShader.setInt("u_texOutput", 0);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
+        else {
             // --- 光栅化渲染 ---
             glEnable(GL_DEPTH_TEST);
 
@@ -588,7 +614,7 @@ int main() {
             // 灯光传递
             int light_count = std::min((int)loader.lights.size(), 16);
             rasterShader.setInt("u_light_count", light_count);
-            for (int i =0; i < light_count; i++) {
+            for (int i = 0; i < light_count; i++) {
                 rasterShader.setVec3("u_light_positions[" + std::to_string(i) + "]", loader.lights[i].position);
                 rasterShader.setVec3("u_light_intensities[" + std::to_string(i) + "]", loader.lights[i].intensity);
             }
@@ -605,11 +631,11 @@ int main() {
                 if (mesh.material.diffuseTex) {
                     glActiveTexture(GL_TEXTURE0);
                     glBindTexture(GL_TEXTURE_2D, mesh.material.diffuseTex);
-                    rasterShader.setInt("u_diffuseTex",0);
-                    rasterShader.setInt("hasDiffuseTex",1); // 必须加上
+                    rasterShader.setInt("u_diffuseTex", 0);
+                    rasterShader.setInt("hasDiffuseTex", 1); // 必须加上
                 }
                 else {
-                    rasterShader.setInt("hasDiffuseTex",0);
+                    rasterShader.setInt("hasDiffuseTex", 0);
                 }
 
                 glBindVertexArray(mesh.VAO);

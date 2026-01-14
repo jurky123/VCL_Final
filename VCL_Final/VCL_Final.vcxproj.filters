@@ -93,6 +93,9 @@
     <ClCompile Include="GPU_Material.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="smallpt.cpp">
+      <Filter>头文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="shader.h">

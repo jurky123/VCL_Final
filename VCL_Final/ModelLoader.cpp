@@ -108,7 +108,7 @@ bool ModelLoader::LoadSceneFromYAML(const std::string& yamlPath) {
     triangles.clear();
     materials.clear();
     materialNameToID.clear();
-    nextMaterialID = 0;
+    nextMaterialID =0;
     lights.clear(); // 新增灯光容器
 
     YAML::Node config;
@@ -152,7 +152,13 @@ bool ModelLoader::LoadSceneFromYAML(const std::string& yamlPath) {
     /* ---------- Lights ---------- */
     if (config["Lights"]) {
         for (auto const& l : config["Lights"]) {
-            Light light;
+            Light light; // ensure we initialize members below
+            // Initialize to safe defaults to avoid using uninitialized memory
+            light.type = Light::Point;
+            light.position = glm::vec3(0.0f);
+            light.direction = glm::vec3(0.0f, -1.0f,0.0f);
+            light.intensity = glm::vec3(1.0f);
+
             std::string type = l["Type"].as<std::string>();
             if (type == "Point") {
                 light.type = Light::Point;
@@ -184,9 +190,9 @@ bool ModelLoader::LoadSceneFromYAML(const std::string& yamlPath) {
 
             Material m; // 默认全白
             m.diffuse = glm::vec3(1.0f);
-            m.emission = 0.0f;
-            m.metallic = 0.0f;
-            m.shiness = 0.5f;
+            m.emission =0.0f;
+            m.metallic =0.0f;
+            m.shiness =0.5f;
 
             if (mat["Diffuse"]) {
                 m.diffuse = glm::vec3(
@@ -204,9 +210,9 @@ bool ModelLoader::LoadSceneFromYAML(const std::string& yamlPath) {
             }
             if (mat["Emission"])
                 m.emission = mat["Emission"].as<float>();
-            if (mat["Metallic"])
+            if (mat["Metallic"]) 
                 m.metallic = mat["Metallic"].as<float>();
-            if (mat["Shiness"])
+            if (mat["Shiness"]) 
                 m.shiness = mat["Shiness"].as<float>();
 
             uint32_t id = nextMaterialID++;
@@ -230,7 +236,7 @@ bool ModelLoader::LoadSceneFromYAML(const std::string& yamlPath) {
         if (!node["Mesh"]) continue;
         std::string meshPath = baseDir + "/" + node["Mesh"].as<std::string>();
 
-        uint32_t materialID = 0;
+        uint32_t materialID =0;
         bool forceThisModel = false; // 默认为 false，使用模型贴图
 
         if (node["Material"]) {
