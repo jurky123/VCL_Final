@@ -143,13 +143,17 @@
     <ClCompile Include="include\imgui_tables.cpp" />
     <ClCompile Include="include\imgui_widgets.cpp" />
     <ClCompile Include="include\stb_vorbis.c" />
+    <ClCompile Include="InputHandler.cpp" />
     <ClCompile Include="light.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="material.cpp" />
     <ClCompile Include="mesh.cpp" />
     <ClCompile Include="model.cpp" />
     <ClCompile Include="ModelLoader.cpp" />
+    <ClCompile Include="RenderContext.cpp" />
     <ClCompile Include="scene.cpp" />
+    <ClCompile Include="SceneManager.cpp" />
+    <ClCompile Include="SceneRenderer.cpp" />
     <ClCompile Include="shader.cpp" />
     <ClCompile Include="smallpt.cpp" />
     <ClCompile Include="triangle.cpp" />
@@ -188,12 +192,16 @@
     <ClInclude Include="include\stb_tilemap_editor.h" />
     <ClInclude Include="include\stb_truetype.h" />
     <ClInclude Include="include\stb_voxel_render.h" />
+    <ClInclude Include="InputHandler.h" />
     <ClInclude Include="light.h" />
     <ClInclude Include="material.h" />
     <ClInclude Include="mesh.h" />
     <ClInclude Include="model.h" />
     <ClInclude Include="ModelLoader.h" />
+    <ClInclude Include="RenderContext.h" />
     <ClInclude Include="scene.h" />
+    <ClInclude Include="SceneManager.h" />
+    <ClInclude Include="SceneRenderer.h" />
     <ClInclude Include="shader.h" />
     <ClInclude Include="triangle.h" />
   </ItemGroup>

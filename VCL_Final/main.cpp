@@ -499,7 +499,7 @@ int main() {
 
         // Path tracer controls
         ImGui::SliderInt("Max Bounces", &pathTracerMaxBounces, 0, 8);
-        ImGui::SliderInt("Samples Per Pixel", &pathTracerSamplesPerPixel, 1, 1024);
+        ImGui::SliderInt("Samples Per Pixel", &pathTracerSamplesPerPixel, 1, 10000);
 
         if (ImGui::Button("Reset View")) {
             LoadScene(scenePaths[currentSceneIndex]);
@@ -546,16 +546,23 @@ int main() {
             addS(1e5f, glm::vec3(50, -1e5f + 81.6f, 81.6f), glm::vec3(0.0f), glm::vec3(.75f, .75f, .75f), 0, 1.0f); // top
             addS(16.5f, glm::vec3(27, 16.5f, 47), glm::vec3(0.0f), glm::vec3(.999f, .999f, .999f), 1, 1.0f); // mirror
             addS(16.5f, glm::vec3(73, 16.5f, 78), glm::vec3(0.0f), glm::vec3(.999f, .999f, .999f), 2, 1.5f); // glass
-            addS(600.0f, glm::vec3(50,681.6f - .27f,81.6f), glm::vec3(12.0f,12.0f,12.0f), glm::vec3(0.0f),0,1.0f); // light
+            addS(600.0f, glm::vec3(50, 681.6f - .27f, 81.6f), glm::vec3(12.0f, 12.0f, 12.0f), glm::vec3(0.0f), 0, 1.0f); // light
 
             UploadSpheresSSBO();
 
-            // set camera to smallpt default
-            camera.Position = glm::vec3(50.0f,52.0f,295.6f);
-            camera.Forward = glm::normalize(glm::vec3(0.0f, -0.042612f, -1.0f));
-            camera.Zoom =45.0f;
-            camera.Yaw = glm::degrees(atan2(camera.Forward.z, camera.Forward.x));
-            camera.Pitch = glm::degrees(asin(camera.Forward.y));
+            // clear triangle SSBO on GPU
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboTriangles);
+            glBufferData(GL_SHADER_STORAGE_BUFFER, 0, nullptr, GL_STATIC_DRAW);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+            // reset accumulation and clear output
+            frameIndex = 0; renderDone = false;
+            if (texOutput) {
+                glBindTexture(GL_TEXTURE_2D, texOutput);
+                std::vector<float> zeros(SCR_WIDTH * SCR_HEIGHT * 4, 0.0f);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, SCR_WIDTH, SCR_HEIGHT, GL_RGBA, GL_FLOAT, zeros.data());
+                glBindTexture(GL_TEXTURE_2D, 0);
+            }
         }
         ImGui::End();
 
@@ -563,40 +570,116 @@ int main() {
         pathTracerShader.use();
         pathTracerShader.setInt("u_triangle_count", (int)loader.triangles.size());
         pathTracerShader.setInt("u_material_count", (int)loader.materials.size());
-        pathTracerShader.setInt("u_sphere_count", (int)cpuSpheres.size());
-        pathTracerShader.setInt("u_frame_index", frameIndex);
-        // perform1 sample per dispatch to keep each compute call short
-        pathTracerShader.setInt("u_samples_per_pixel", 1);
-        pathTracerShader.setInt("u_max_bounces", pathTracerMaxBounces);
 
         float aspect = float(SCR_WIDTH - SIDEBAR_WIDTH) / float(SCR_HEIGHT);
         pathTracerShader.setMat4("u_inv_view", camera.GetInverseViewMatrix());
         pathTracerShader.setMat4("u_inv_proj", camera.GetInverseProjectionMatrix(aspect));
 
-        glBindImageTexture(0, texOutput, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboTriangles);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboMaterials);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, ssboSpheres);
+        // Do not dispatch compute here — dispatch will be done once when entering the
+        // path-tracing branch below. This avoids running the heavy compute shader
+        // every frame and freezing the UI.
 
-        GLuint groupX = (SCR_WIDTH + 15) / 16;
-        GLuint groupY = (SCR_HEIGHT + 15) / 16;
-        glDispatchCompute(groupX, groupY, 1);
+        // 绘制到屏幕
+        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        if (isRendering) {
+            glViewport(SIDEBAR_WIDTH, 0, SCR_WIDTH - SIDEBAR_WIDTH, SCR_HEIGHT);
 
-        // increment frame index (accumulated samples)
-        frameIndex++;
-        if (frameIndex >= pathTracerSamplesPerPixel) {
-            renderDone = true;
-        }
+            // --- Step 0: 生成 Path Tracing Triangles（只在场景更新时做一次） ---
+            static std::vector<Triangle> ptTriangles;
 
-        // --- Step2: 渲染到屏幕 ---
-        screenShader.use();
-        glBindVertexArray(quadVAO);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, texOutput);
-        screenShader.setInt("u_texOutput", 0);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+            if (ptTrianglesDirty) {
+                ptTriangles.clear();
+
+                for (auto& mesh : sceneMeshes) {
+                    for (size_t i = 0; i < mesh.indices.size(); i += 3) {
+                        Triangle tri;
+
+                        uint32_t idx0 = mesh.indices[i];
+                        uint32_t idx1 = mesh.indices[i + 1];
+                        uint32_t idx2 = mesh.indices[i + 2];
+
+                        tri.v0 = glm::vec4(mesh.vertices[idx0].position, 1.0f);
+                        tri.v1 = glm::vec4(mesh.vertices[idx1].position, 1.0f);
+                        tri.v2 = glm::vec4(mesh.vertices[idx2].position, 1.0f);
+
+                        tri.n0 = glm::vec4(mesh.vertices[idx0].normal, 0.0f);
+                        tri.n1 = glm::vec4(mesh.vertices[idx1].normal, 0.0f);
+                        tri.n2 = glm::vec4(mesh.vertices[idx2].normal, 0.0f);
+
+                        tri.uv0 = glm::vec4(mesh.vertices[idx0].uv, 0.0f, 0.0f);
+                        tri.uv1 = glm::vec4(mesh.vertices[idx1].uv, 0.0f, 0.0f);
+                        tri.uv2 = glm::vec4(mesh.vertices[idx2].uv, 0.0f, 0.0f);
+
+                        tri.material_id = mesh.material_index; // ? 使用索引
+
+                        ptTriangles.push_back(tri);
+                    }
+                    ptTrianglesDirty = false;
+                }
+                for (int i = 0; i < 10 && i < ptTriangles.size(); ++i)
+                    std::cout << "Tri " << i << " material_id=" << ptTriangles[i].material_id << "\n";
+                // 上传到 GPU
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboTriangles);
+                glBufferData(GL_SHADER_STORAGE_BUFFER,
+                    ptTriangles.size() * sizeof(Triangle),
+                    ptTriangles.data(),
+                    GL_STATIC_DRAW);
+                glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+                ptTrianglesDirty = false; // 只上传一次
+            }
+            if (texArray != 0) {
+                glActiveTexture(GL_TEXTURE3);
+                glBindTexture(GL_TEXTURE_2D_ARRAY, texArray);
+            }
+            // --- Step1: Dispatch Compute Shader once ---
+            if (!renderDone) {
+                // Progressive rendering: dispatch one sample per frame to avoid long blocking compute calls
+                pathTracerShader.use();
+
+                // bind texture array sampler to unit3
+                pathTracerShader.setInt("u_texArray", 3);
+                // upload and bind lights SSBO and count
+                pathTracerShader.setInt("u_light_count", (int)loader.lights.size());
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, ssboLights);
+
+                pathTracerShader.setInt("u_triangle_count", (int)ptTriangles.size());
+                pathTracerShader.setInt("u_material_count", (int)loader.materials.size());
+                pathTracerShader.setInt("u_frame_index", frameIndex);
+                // perform1 sample per dispatch to keep each compute call short
+                pathTracerShader.setInt("u_samples_per_pixel", pathTracerSamplesPerPixel);
+                pathTracerShader.setInt("u_max_bounces", pathTracerMaxBounces);
+
+                float aspect = float(SCR_WIDTH - SIDEBAR_WIDTH) / float(SCR_HEIGHT);
+                pathTracerShader.setMat4("u_inv_view", camera.GetInverseViewMatrix());
+                pathTracerShader.setMat4("u_inv_proj", camera.GetInverseProjectionMatrix(aspect));
+
+                glBindImageTexture(0, texOutput, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboTriangles);
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboMaterials);
+                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 5, ssboSpheres);
+
+                GLuint groupX = (SCR_WIDTH + 15) / 16;
+                GLuint groupY = (SCR_HEIGHT + 15) / 16;
+                glDispatchCompute(groupX, groupY, 1);
+
+                glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+
+                // increment frame index (accumulated samples)
+                frameIndex++;
+                if (frameIndex >= pathTracerSamplesPerPixel) {
+                    renderDone = true;
+                }
+            }
+            // --- Step2: 渲染到屏幕 ---
+            screenShader.use();
+            glBindVertexArray(quadVAO);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, texOutput);
+            screenShader.setInt("u_texOutput", 0);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
         }
         else {
             // --- 光栅化渲染 ---
