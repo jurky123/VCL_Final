@@ -203,6 +203,7 @@
     <ClInclude Include="SceneManager.h" />
     <ClInclude Include="SceneRenderer.h" />
     <ClInclude Include="shader.h" />
+    <ClInclude Include="Sphere.h" />
     <ClInclude Include="triangle.h" />
   </ItemGroup>
   <ItemGroup>

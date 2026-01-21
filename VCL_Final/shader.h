@@ -13,6 +13,8 @@ class Shader {
 public:
     unsigned int ID;
 
+    Shader() : ID(0) {}
+
     // 构造函数 1：用于普通的渲染管线 (Vertex + Fragment)
     Shader(const char* vertexPath, const char* fragmentPath) {
         std::string vertexCode = readFile(vertexPath);
@@ -43,7 +45,7 @@ public:
     }
 
     // 激活着色器
-    void use() { glUseProgram(ID); }
+    void use() const { glUseProgram(ID); }
 
     // --- Uniform 工具函数 ---
     void setBool(const std::string& name, bool value) const {
